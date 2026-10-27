@@ -1,0 +1,101 @@
+name: release
+
+# Push a tag v<version>, e.g. v0.7, to build that version, sign the app, and
+# publish a GitHub release. An annotated tag's message becomes the release's
+# "Changes" section.
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Parse tag
+        id: tag
+        run: |
+          tag=${GITHUB_REF_NAME}
+          ver=${tag#v}
+          [[ $ver =~ ^[0-9]+(\.[0-9]+){1,2}$ ]] || { echo "::error::tag must look like v0.7"; exit 1; }
+          echo "ver=$ver" >> "$GITHUB_OUTPUT"
+          # Annotated tag message, if any (a lightweight tag has none).
+          git fetch --no-tags --force origin "refs/tags/$tag:refs/tags/$tag"
+          if [ "$(git cat-file -t "refs/tags/$tag")" = tag ]; then
+            git for-each-ref --format='%(contents:subject)%0a%0a%(contents:body)' "refs/tags/$tag" > "$RUNNER_TEMP/notes.txt"
+          else
+            : > "$RUNNER_TEMP/notes.txt"
+          fi
+
+      # Gradle 9 and the Android Gradle Plugin need Java 17+.
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: "21"
+
+      - name: Android SDK
+        run: '"$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "platforms;android-36" "build-tools;36.0.0" > /dev/null'
+
+      - name: Build and sign
+        env:
+          DASHCAM_KEYSTORE_B64: ${{ secrets.DASHCAM_KEYSTORE_B64 }}
+          DASHCAM_KEY_PASS: ${{ secrets.DASHCAM_KEY_PASS }}
+        run: |
+          [ -n "$DASHCAM_KEYSTORE_B64" ] && [ -n "$DASHCAM_KEY_PASS" ] \
+            || { echo "::error::DASHCAM_KEYSTORE_B64 and DASHCAM_KEY_PASS secrets are required"; exit 1; }
+          export DASHCAM_KEYSTORE=$RUNNER_TEMP/key/dashcam.jks
+          mkdir -m 700 "$RUNNER_TEMP/key"
+          trap 'rm -rf "$RUNNER_TEMP/key"' EXIT
+          base64 -d <<< "$DASHCAM_KEYSTORE_B64" > "$DASHCAM_KEYSTORE"
+          ./build.sh "${{ steps.tag.outputs.ver }}"
+          rm dist/dashcam.jar  # inside the package; not a release download
+
+      - name: Release notes
+        run: |
+          python3 -I - .github/release-body.md "$RUNNER_TEMP/notes.txt" dist/release-body.md <<'PY'
+          import sys
+          tmpl, notes, out = sys.argv[1:4]
+          body = open(tmpl).read()
+          changes = open(notes).read().strip()
+          subs = {
+              "@VERSION@": "${{ steps.tag.outputs.ver }}",
+              "@ZIP@": "dashcam-${{ steps.tag.outputs.ver }}.zip",
+              "@USBZIP@": "dashcam-${{ steps.tag.outputs.ver }}-usb.zip",
+              "@CHANGES@": f"\n**Changes in this version:**\n\n{changes}\n" if changes else "",
+          }
+          for k, v in subs.items():
+              body = body.replace(k, v)
+          open(out, "w").write(body)
+          PY
+          cat dist/release-body.md
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: dist
+          path: dist/
+          if-no-files-found: error
+
+  # Publishing is a separate job so the job holding the signing key never has
+  # write access to the repo.
+  release:
+    needs: build
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          name: dist
+          path: dist
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tag=${GITHUB_REF_NAME}
+          mv dist/release-body.md body.md
+          gh release create "$tag" -R "$GITHUB_REPOSITORY" --verify-tag --latest \
+            --title "Rear Dashcam ${tag#v} for Gen5W" --notes-file body.md dist/*
