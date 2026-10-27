@@ -217,6 +217,10 @@ public final class MainActivity extends Activity {
                     color = 0xFF5B6470;
                     text = "Recording is off";
                     break;
+                case "caroff":
+                    color = 0xFF5B6470;
+                    text = "Waiting for the car to be on";
+                    break;
                 case "nodrive":
                     color = 0xFFF59E0B;
                     text = "Waiting for a USB drive";

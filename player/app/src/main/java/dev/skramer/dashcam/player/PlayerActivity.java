@@ -1,8 +1,6 @@
 package dev.skramer.dashcam.player;
 
 import android.app.Activity;
-import android.app.AlertDialog;
-import android.content.DialogInterface;
 import android.graphics.Bitmap;
 import android.graphics.Matrix;
 import android.media.MediaFormat;
@@ -430,20 +428,28 @@ public final class PlayerActivity extends Activity implements Player.Listener, H
 
     // Save and snapshot ----------------------------------------------------------------------
 
-    /** Saves the minute before and after this moment: those clips move to the Saved folder. */
+    /**
+     * Saves the minute before and after this moment: those clips move to the Saved folder. A save
+     * that touches an earlier one joins it (Library.savedEvents), so saved footage only ever
+     * comes in whole events, and those are unsaved or deleted whole, from the Saved screen.
+     */
     private void saveHere() {
         final long wall = wallNow();
         Clip c = current();
         if (c != null && c.saved) {
-            confirmUnsave(c);
+            showMessage("Already saved\nUnsave or delete it from Saved on the home screen", 3000);
             return;
         }
         final List<Clip> clips = lib.between(wall - SAVE_AROUND_MS, wall + SAVE_AROUND_MS);
         final boolean playing = player.getPlayWhenReady();
-        fileJob(clips, true, new Runnable() {
+        save(clips, new Runnable() {
             @Override
             public void run() {
-                Clip first = clips.get(0), last = clips.get(clips.size() - 1);
+                List<Clip> event = clips;
+                for (List<Clip> e : lib.savedEvents()) {
+                    for (Clip s : e) if (s.file.getName().equals(clips.get(0).file.getName())) event = e;
+                }
+                Clip first = event.get(0), last = event.get(event.size() - 1);
                 showMessage("Saved " + Fmt.hm(first.start) + " – " + Fmt.hm(last.end())
                         + "\nSaved clips are never deleted to make room", 3000);
                 openAt(wall, playing);
@@ -451,40 +457,15 @@ public final class PlayerActivity extends Activity implements Player.Listener, H
         });
     }
 
-    private void confirmUnsave(Clip c) {
-        List<Clip> event = null;
-        for (List<Clip> e : lib.savedEvents()) if (e.contains(c)) event = e;
-        if (event == null) return;
-        final List<Clip> clips = event;
-        final long wall = wallNow();
-        final boolean playing = player.getPlayWhenReady();
-        new AlertDialog.Builder(this, AlertDialog.THEME_HOLO_DARK)
-                .setTitle("Unsave " + Fmt.hm(clips.get(0).start) + " – " + Fmt.hm(clips.get(clips.size() - 1).end()) + "?")
-                .setMessage("It goes back into the loop, and gets deleted when the drive needs room.")
-                .setNegativeButton("Cancel", null)
-                .setPositiveButton("Unsave", new DialogInterface.OnClickListener() {
-                    @Override
-                    public void onClick(DialogInterface d, int which) {
-                        fileJob(clips, false, new Runnable() {
-                            @Override
-                            public void run() {
-                                openAt(wall, playing);
-                            }
-                        });
-                    }
-                })
-                .show();
-    }
-
-    /** Moves clips into or out of Saved, rescans, then runs {@code then}. */
-    private void fileJob(final List<Clip> clips, final boolean saved, final Runnable then) {
+    /** Moves clips into Saved, rescans, then runs {@code then}. */
+    private void save(final List<Clip> clips, final Runnable then) {
         if (clips.isEmpty()) return;
         final Library l = lib;
         io.execute(new Runnable() {
             @Override
             public void run() {
                 int failed = 0;
-                for (Clip c : clips) if (!l.setSaved(c, saved)) failed++;
+                for (Clip c : clips) if (!l.setSaved(c, true)) failed++;
                 final int f = failed;
                 handler.post(new Runnable() {
                     @Override

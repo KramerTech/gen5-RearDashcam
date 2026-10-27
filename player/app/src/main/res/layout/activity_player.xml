@@ -147,16 +147,18 @@
             android:layout_height="0dp"
             android:layout_weight="1" />
 
+        <!-- Not baseline-aligned: the two-line frame buttons would be pushed down and clipped. -->
         <LinearLayout
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
+            android:baselineAligned="false"
             android:orientation="horizontal">
 
             <Button android:id="@+id/back60" style="@style/Control" android:text="−1 min" />
             <Button android:id="@+id/back10" style="@style/Control" android:text="−10 s" />
-            <Button android:id="@+id/frameBack" style="@style/Control" android:textSize="16sp" android:text="−1 frame" />
+            <Button android:id="@+id/frameBack" style="@style/Control" android:paddingLeft="4dp" android:paddingRight="4dp" android:textSize="16sp" android:text="−1 frame" />
             <ImageButton android:id="@+id/playPause" style="@style/Control" android:layout_weight="1.4" android:contentDescription="Play or pause" android:src="@drawable/ic_pause" />
-            <Button android:id="@+id/frameFwd" style="@style/Control" android:textSize="16sp" android:text="+1 frame" />
+            <Button android:id="@+id/frameFwd" style="@style/Control" android:paddingLeft="4dp" android:paddingRight="4dp" android:textSize="16sp" android:text="+1 frame" />
             <Button android:id="@+id/fwd10" style="@style/Control" android:text="+10 s" />
             <Button android:id="@+id/fwd60" style="@style/Control" android:text="+1 min" />
         </LinearLayout>
@@ -165,6 +167,7 @@
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:layout_marginTop="8dp"
+            android:baselineAligned="false"
             android:orientation="horizontal">
 
             <Button android:id="@+id/speed" style="@style/Control" android:text="Speed 1×" />

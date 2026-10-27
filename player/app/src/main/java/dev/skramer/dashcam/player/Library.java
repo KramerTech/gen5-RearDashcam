@@ -1,14 +1,22 @@
 package dev.skramer.dashcam.player;
 
+import java.io.BufferedReader;
 import java.io.File;
+import java.io.FileInputStream;
+import java.io.FileOutputStream;
+import java.io.IOException;
+import java.io.InputStreamReader;
+import java.nio.charset.StandardCharsets;
 import java.text.ParseException;
 import java.text.SimpleDateFormat;
 import java.util.ArrayList;
 import java.util.Calendar;
 import java.util.Collections;
 import java.util.Comparator;
+import java.util.HashMap;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -19,6 +27,8 @@ import java.util.regex.Pattern;
 final class Library {
     static final String SAVED = "Saved";
     static final String SNAPSHOTS = "Snapshots";
+    /** Names given to saved events: "clip file name<TAB>name" lines, kept on the drive with the clips. */
+    private static final String NAMES = "names.txt";
     static final long HOUR = 3_600_000L;
     private static final Pattern NAME = Pattern.compile("(\\d{8}_\\d{6})(_\\d+)?\\.ts");
 
@@ -166,13 +176,20 @@ final class Library {
         return out;
     }
 
-    /** Saved clips grouped into events: runs with less than a minute between them. */
+    /**
+     * Saved clips grouped into events: runs of saved clips with no unsaved clip between them and
+     * less than a minute between one's end and the next's start (a pause for reverse doesn't
+     * split an event; a stretch of unsaved footage does).
+     */
     List<List<Clip>> savedEvents() {
         List<List<Clip>> events = new ArrayList<>();
         List<Clip> cur = null;
         long end = 0;
         for (Clip c : clips) {
-            if (!c.saved) continue;
+            if (!c.saved) {
+                cur = null;
+                continue;
+            }
             if (cur == null || c.start - end > 60_000) {
                 cur = new ArrayList<>();
                 events.add(cur);
@@ -182,6 +199,56 @@ final class Library {
         }
         Collections.reverse(events);
         return events;
+    }
+
+    /** The names given to saved events, by the file name of a clip in the event. */
+    Map<String, String> names() {
+        Map<String, String> names = new HashMap<>();
+        File f = new File(new File(dir, SAVED), NAMES);
+        if (!f.isFile()) return names;
+        try (BufferedReader r = new BufferedReader(new InputStreamReader(new FileInputStream(f), StandardCharsets.UTF_8))) {
+            for (String line; (line = r.readLine()) != null; ) {
+                int tab = line.indexOf('\t');
+                if (tab > 0 && tab < line.length() - 1) names.put(line.substring(0, tab), line.substring(tab + 1));
+            }
+        } catch (IOException ignored) {
+            // Unnamed, then.
+        }
+        return names;
+    }
+
+    /** The event's name, or null. */
+    static String nameOf(List<Clip> event, Map<String, String> names) {
+        for (Clip c : event) {
+            String n = names.get(c.file.getName());
+            if (n != null) return n;
+        }
+        return null;
+    }
+
+    /**
+     * Names a saved event (null or blank clears it). The name goes on its first clip and is
+     * removed from the others, so events that later merge or shrink keep one name.
+     */
+    boolean setName(List<Clip> event, String name) {
+        Map<String, String> names = names();
+        for (Clip c : event) names.remove(c.file.getName());
+        if (name != null && !name.trim().isEmpty()) {
+            names.put(event.get(0).file.getName(), name.trim().replaceAll("[\\t\\r\\n]+", " "));
+        }
+        File saved = new File(dir, SAVED), f = new File(saved, NAMES), tmp = new File(saved, NAMES + ".tmp");
+        if (!saved.isDirectory()) return false;
+        StringBuilder text = new StringBuilder();
+        for (Map.Entry<String, String> e : names.entrySet()) {
+            if (new File(saved, e.getKey()).isFile()) text.append(e.getKey()).append('\t').append(e.getValue()).append('\n');
+        }
+        try (FileOutputStream out = new FileOutputStream(tmp)) {
+            out.write(text.toString().getBytes(StandardCharsets.UTF_8));
+        } catch (IOException e) {
+            return false;
+        }
+        f.delete();  // FAT/exFAT through FUSE won't rename over a file
+        return tmp.renameTo(f);
     }
 
     /** Moves a clip into or out of the Saved folder. Returns false if the rename failed. */
