@@ -7,7 +7,7 @@ Turns your backup camera into a dashcam for Hyundai, Kia and Genesis cars with t
 - **Always recording while the car is on.** Nothing to open or turn on. It stops when the car is off.
 - **Never fills up.** When the drive is full, the oldest recordings are deleted to make room.
 - **Your backup camera still works.** When you reverse or press the camera button, the dashcam steps aside, and starts again a few seconds after.
-- **Save from the steering wheel.** Press the mute button four times quickly to keep the last two minutes. The sound ends up as it was.
+- **Save from the steering wheel.** Press the mute button four times quickly to keep the last two minutes.
 - **Watch on the screen** (in Park): browse by day and hour, skip around, step frame by frame, zoom in on a license plate, take a snapshot.
 - **Keep and name the moments that matter.** Saved recordings are never deleted to make room.
 
