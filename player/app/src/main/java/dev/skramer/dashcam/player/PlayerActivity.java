@@ -53,8 +53,9 @@ public final class PlayerActivity extends Activity implements Player.Listener, H
     static final String EXTRA_WALL = "wall";
     private static final String TAG = "DashcamPlayer";
     private static final float[] SPEEDS = {1, 2, 4, 8, 0.5f};
-    /** Frames are 2 ticks of 59.94 Hz apart. */
+    /** One frame at 30 fps, the most the recorder records; back steps go back by this until they reach the previous frame. */
     private static final long FRAME_US = 33_367;
+    private static final int MAX_STEP_BACK_TRIES = 8;
     private static final long TICK_MS = 100;
     private static final long SAVE_AROUND_MS = 60_000;
 
@@ -79,8 +80,9 @@ public final class PlayerActivity extends Activity implements Player.Listener, H
     private int errors;
     /** Timestamp of the frame on screen (period time, µs), from the renderer. */
     private volatile long frameUs = -1;
-    /** A backward frame step in progress: the frame it started from. */
-    private long stepBackFrom = -1;
+    /** A backward frame step in progress: the frame it started from, and where it's looking now (µs). */
+    private long stepBackFrom = -1, stepBackTarget;
+    private int stepBackTries;
 
     private TextureView video;
     private TextView overlayTime, overlayBadge, message, dayTitle, hourLabel, timeBig, clipInfo;
@@ -250,10 +252,12 @@ public final class PlayerActivity extends Activity implements Player.Listener, H
         return i < playlist.size() ? playlist.get(i) : null;
     }
 
-    /** The wall-clock time of what's on screen. */
+    /** The wall-clock time of what's on screen: while paused, of the exact frame showing. */
     private long wallNow() {
         Clip c = current();
-        return c == null ? resumeWall : c.start + player.getCurrentPosition();
+        if (c == null) return resumeWall;
+        if (!player.getPlayWhenReady() && frameUs >= 0) return c.start + frameUs / 1000;
+        return c.start + player.getCurrentPosition();
     }
 
     /** Loads the playlist of the day with footage at (or after) {@code wall}; 0 = the latest. */
@@ -381,7 +385,8 @@ public final class PlayerActivity extends Activity implements Player.Listener, H
 
     /**
      * One frame forward or back, paused. A paused seek shows the first frame at or after the
-     * target, so forward aims just past the frame on screen and back just before it.
+     * target, so forward aims just past the frame on screen. Back aims one 30 fps frame earlier;
+     * if that shows the same frame (lower frame rates, dropped frames), frameShown backs up again.
      */
     private void stepFrame(int dir) {
         player.setPlayWhenReady(false);
@@ -396,29 +401,29 @@ public final class PlayerActivity extends Activity implements Player.Listener, H
             if (duration != C.TIME_UNSET && target >= duration - 1 && i + 1 < playlist.size()) player.seekTo(i + 1, 0);
             else player.seekTo(i, target);
         } else {
-            long target = (cur - FRAME_US) / 1000;
+            long target = cur - FRAME_US;
             if (target < 0) {
                 if (i > 0) player.seekTo(i - 1, Math.max(0, playlist.get(i - 1).durationMs - 40));
                 return;
             }
             stepBackFrom = cur;
-            player.seekTo(i, target);
+            stepBackTarget = target;
+            stepBackTries = 0;
+            player.seekTo(i, target / 1000);
         }
     }
 
-    /** A frame was rendered: retry a back step that landed on the same frame (a dropped frame). */
+    /** A frame was rendered: if a back step landed on the frame it started from, back up further. */
     private final Runnable frameShown = new Runnable() {
         @Override
         public void run() {
             errors = 0;
-            long f = frameUs;
-            if (stepBackFrom >= 0 && player != null) {
-                if (f == stepBackFrom && f > FRAME_US) {
-                    stepBackFrom = -1;
-                    player.seekTo(player.getCurrentMediaItemIndex(), (f - 2 * FRAME_US) / 1000);
-                } else {
-                    stepBackFrom = -1;
-                }
+            if (stepBackFrom < 0 || player == null) return;
+            stepBackTarget -= FRAME_US;
+            if (frameUs >= stepBackFrom && stepBackTarget >= 0 && ++stepBackTries < MAX_STEP_BACK_TRIES) {
+                player.seekTo(player.getCurrentMediaItemIndex(), stepBackTarget / 1000);
+            } else {
+                stepBackFrom = -1;
             }
         }
     };
@@ -695,7 +700,8 @@ public final class PlayerActivity extends Activity implements Player.Listener, H
     private void updateUi() {
         if (player == null || lib == null || playlist.isEmpty()) return;
         long w = scrubbing ? scrubWall : wallNow();
-        String t = Fmt.time(w);
+        boolean paused = !player.getPlayWhenReady() && !scrubbing;
+        String t = paused ? Fmt.timeMs(w) : Fmt.time(w);
         overlayTime.setText(t);
         timeBig.setText(t);
         dayTitle.setText(Fmt.longDay(Library.dayOf(w)));

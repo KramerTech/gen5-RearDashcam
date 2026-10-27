@@ -154,9 +154,9 @@
 
             <Button android:id="@+id/back60" style="@style/Control" android:text="−1 min" />
             <Button android:id="@+id/back10" style="@style/Control" android:text="−10 s" />
-            <ImageButton android:id="@+id/frameBack" style="@style/Control" android:contentDescription="Previous frame" android:src="@drawable/ic_frame_back" />
+            <Button android:id="@+id/frameBack" style="@style/Control" android:textSize="16sp" android:text="−1 frame" />
             <ImageButton android:id="@+id/playPause" style="@style/Control" android:layout_weight="1.4" android:contentDescription="Play or pause" android:src="@drawable/ic_pause" />
-            <ImageButton android:id="@+id/frameFwd" style="@style/Control" android:contentDescription="Next frame" android:src="@drawable/ic_frame_fwd" />
+            <Button android:id="@+id/frameFwd" style="@style/Control" android:textSize="16sp" android:text="+1 frame" />
             <Button android:id="@+id/fwd10" style="@style/Control" android:text="+10 s" />
             <Button android:id="@+id/fwd60" style="@style/Control" android:text="+1 min" />
         </LinearLayout>

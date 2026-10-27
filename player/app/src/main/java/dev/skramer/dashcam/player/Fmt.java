@@ -9,6 +9,7 @@ final class Fmt {
     private Fmt() {}
 
     private static final SimpleDateFormat TIME = new SimpleDateFormat("HH:mm:ss", Locale.US);
+    private static final SimpleDateFormat TIME_MS = new SimpleDateFormat("HH:mm:ss.SSS", Locale.US);
     private static final SimpleDateFormat HM = new SimpleDateFormat("HH:mm", Locale.US);
     private static final SimpleDateFormat DAY = new SimpleDateFormat("EEE, MMM d", Locale.US);
     private static final SimpleDateFormat LONG_DAY = new SimpleDateFormat("EEEE, MMMM d", Locale.US);
@@ -16,6 +17,11 @@ final class Fmt {
 
     static String time(long t) {
         return TIME.format(new Date(t));
+    }
+
+    /** With milliseconds, so single frames show as different times. */
+    static String timeMs(long t) {
+        return TIME_MS.format(new Date(t));
     }
 
     static String hm(long t) {
