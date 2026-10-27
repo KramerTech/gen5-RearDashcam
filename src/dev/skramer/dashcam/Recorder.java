@@ -25,10 +25,13 @@ final class Recorder implements Camera.PreviewCallback, Camera.ErrorCallback {
     private static final int CALLBACK_BUFFERS = 4;
     /** The camera's frame period (NTSC, 59.94 Hz). Timestamps snap to it: arrival times jitter. */
     private static final long TICK_US = 1_000_000L * 1001 / 60_000;
+    /** The camera still draws its guide lines for a couple of frames after they're turned off. */
+    private static final long GUIDE_LINES_SETTLE_NS = 300_000_000L;
 
     private final Config config;
     private final Handler handler;
     private final SegmentWriter writer;
+    private final GuideLines guideLines;
     private final int width, height, ySize, cSize, frameLength;
     private final byte[] i420;
     private final int ticksPerFrame;
@@ -40,8 +43,9 @@ final class Recorder implements Camera.PreviewCallback, Camera.ErrorCallback {
     private final MediaCodec.BufferInfo info = new MediaCodec.BufferInfo();
     private byte[] codecConfig;
     private volatile boolean active;
-    private long startNs, nextTick, lastPtsUs;
+    private long startNs, nextTick, lastPtsUs, skipUntilNs;
     private int dropped;
+    private boolean noPicture;
     private long statsStartMs, convertNs;
     private int encoded;
 
@@ -67,6 +71,12 @@ final class Recorder implements Camera.PreviewCallback, Camera.ErrorCallback {
             }
         });
         writer.start();
+        guideLines = config.hideGuideLines ? new GuideLines(config) : null;
+    }
+
+    /** Saves the last few minutes, from any thread. */
+    void saveRecent() {
+        writer.saveRecent();
     }
 
     /** True while the camera is open. Read from other threads. */
@@ -94,6 +104,7 @@ final class Recorder implements Camera.PreviewCallback, Camera.ErrorCallback {
             outputs = encoder.getOutputBuffers();
             }
 
+            boolean hidLines = guideLines != null && guideLines.hide();
             camera = CameraOpener.open(CAMERA_ID);
             Camera.Parameters p = camera.getParameters();
             p.setPreviewSize(width, height);
@@ -107,6 +118,7 @@ final class Recorder implements Camera.PreviewCallback, Camera.ErrorCallback {
             for (int i = 0; i < CALLBACK_BUFFERS; i++) camera.addCallbackBuffer(new byte[frameLength]);
             camera.startPreview();
             startNs = System.nanoTime();
+            skipUntilNs = hidLines ? startNs + GUIDE_LINES_SETTLE_NS : startNs;
             nextTick = 0;
             lastPtsUs = -1;
             statsStartMs = android.os.SystemClock.uptimeMillis();
@@ -120,7 +132,10 @@ final class Recorder implements Camera.PreviewCallback, Camera.ErrorCallback {
         }
     }
 
-    /** Releases the camera first, so the stock reverse view can open it as soon as possible. */
+    /**
+     * Releases the camera first, so the stock reverse view can open it as soon as possible, then
+     * turns the guide lines back on for it.
+     */
     void stop() {
         boolean was = active;
         active = false;
@@ -139,6 +154,7 @@ final class Recorder implements Camera.PreviewCallback, Camera.ErrorCallback {
                 Log.e("camera release failed", t);
             }
         }
+        if (guideLines != null) guideLines.restore();
         if (encoder != null) {
             try {
                 encoder.stop();
@@ -171,6 +187,10 @@ final class Recorder implements Camera.PreviewCallback, Camera.ErrorCallback {
     @Override
     public void onPreviewFrame(byte[] data, Camera c) {
         if (!active || c != camera || data == null) return;
+        if (System.nanoTime() < skipUntilNs) {
+            c.addCallbackBuffer(data);
+            return;
+        }
         long tick = ((System.nanoTime() - startNs) / 1000 + TICK_US / 2) / TICK_US;
         if (tick >= nextTick) {
             // Fell more than a frame behind (a stall): restart the cadence here.
@@ -178,7 +198,12 @@ final class Recorder implements Camera.PreviewCallback, Camera.ErrorCallback {
             long pts = tick * TICK_US;
             if (pts <= lastPtsUs) pts = lastPtsUs + TICK_US;
             lastPtsUs = pts;
-            if (encoder != null) {
+            boolean blank = blank(data);
+            if (blank != noPicture) {
+                Log.i(blank ? "no picture from the camera; not recording until there is" : "the camera's picture is back");
+                noPicture = blank;
+            }
+            if (encoder != null && !blank) {
                 encode(data, pts);
                 drain();
                 logStats();
@@ -187,7 +212,30 @@ final class Recorder implements Camera.PreviewCallback, Camera.ErrorCallback {
         c.addCallbackBuffer(data);
     }
 
-    /** Converts a YUYV frame to I420 (chroma from even rows) and queues it to the encoder. */
+    /**
+     * True if the camera sent no picture: it does that for about 25 s after the head unit starts,
+     * and while the car is off. The frame is then the capture buffer as it was left, all or
+     * partly filled with exactly Y=U=V=0 (green) or 128 (grey), which real video, with its
+     * noise, never is, not even in the dark. Checks a grid of pixels.
+     */
+    private boolean blank(byte[] yuyv) {
+        int untouched = 0, samples = 0;
+        for (int row = height / 16; row < height; row += height / 8) {
+            for (int col = width / 24; col < width; col += width / 12) {
+                int s = (row * width + (col & ~1)) * 2;  // a YUYV pair: Y0 U Y1 V
+                int y = yuyv[s] & 0xff, u = yuyv[s + 1] & 0xff, v = yuyv[s + 3] & 0xff;
+                if (y == u && u == v && (y == 0 || y == 128)) untouched++;
+                samples++;
+            }
+        }
+        return untouched * 2 >= samples;
+    }
+
+    /**
+     * Converts a YUYV frame to I420 (chroma from even rows) and queues it to the encoder. The
+     * backup camera's picture is a mirror image; with Config.mirror each row is written right to
+     * left, which puts it the right way round at no extra cost.
+     */
     private void encode(byte[] yuyv, long ptsUs) {
         int i = encoder.dequeueInputBuffer(0);
         if (i < 0) {
@@ -196,25 +244,32 @@ final class Recorder implements Camera.PreviewCallback, Camera.ErrorCallback {
         }
         long t0 = System.nanoTime();
         byte[] out = i420;
-        int w = width, y = 0;
+        int w = width, half = width / 2;
         int u = ySize, v = ySize + cSize;
         if (config.swapUv) {
             u = ySize + cSize;
             v = ySize;
         }
+        boolean mirror = config.mirror;
+        int step = mirror ? -1 : 1;
         for (int row = 0, s = 0; row < height; row++) {
             int end = s + w * 2;
+            int y = mirror ? row * w + w - 1 : row * w;
             if ((row & 1) == 0) {
-                for (; s < end; s += 4) {
-                    out[y++] = yuyv[s];
-                    out[u++] = yuyv[s + 1];
-                    out[y++] = yuyv[s + 2];
-                    out[v++] = yuyv[s + 3];
+                for (int c = (row >> 1) * half + (mirror ? half - 1 : 0); s < end; s += 4, c += step) {
+                    out[y] = yuyv[s];
+                    y += step;
+                    out[y] = yuyv[s + 2];
+                    y += step;
+                    out[u + c] = yuyv[s + 1];
+                    out[v + c] = yuyv[s + 3];
                 }
             } else {
                 for (; s < end; s += 4) {
-                    out[y++] = yuyv[s];
-                    out[y++] = yuyv[s + 2];
+                    out[y] = yuyv[s];
+                    y += step;
+                    out[y] = yuyv[s + 2];
+                    y += step;
                 }
             }
         }

@@ -37,6 +37,10 @@ import java.util.concurrent.TimeUnit;
  * a lease file fresh, and recording pauses: with the camera running, video playback on this unit
  * shows flashes of corrupt frames. For the same reason it pauses while another video app
  * (Config.pauseFor) is in front. The status file says what the recorder is doing.
+ *
+ * It only records while the ignition is on. The head unit also starts up while the car is off
+ * (every half hour or so overnight, for the car's own checks), and then the camera has no power
+ * and delivers noise.
  */
 final class Guard extends Thread {
     private static final String STOCK_CAMERA_START = "com.hkmc.intent.action.CAMERA_APP_START";
@@ -46,6 +50,8 @@ final class Guard extends Thread {
     private static final long SETTLE_MS = 3000;
     private static final long RELEASE_TIMEOUT_MS = 800;
     private static final long RETRY_MS = 5000;
+    /** The ignition reading off this many polls in a row (about a second) means the car is off. */
+    private static final int IGNITION_OFF_POLLS = 4;
     /** The player renews its lease every 2 s; a lease older than this has lapsed (app gone). */
     private static final long LEASE_MS = 6000;
 
@@ -69,6 +75,8 @@ final class Guard extends Thread {
     private String videoAppInFront;
     private Method getTasks;
     private int lastGear = -1;
+    private int ignitionOffPolls;
+    private Boolean lastIgnition;
     private String lastState;
 
     Guard(Config config, Recorder recorder) {
@@ -108,6 +116,7 @@ final class Guard extends Thread {
                     lastGear = gear;
                 }
                 if (gear == GEAR_REVERSE) lastBlockMs = now;
+                boolean carOff = carOff();
                 boolean blocked = now - lastBlockMs < SETTLE_MS;
                 if (beat % 4 == 0) checkAppSettings();
                 if (beat % 4 == 0) videoAppInFront = videoAppInFront();
@@ -120,9 +129,13 @@ final class Guard extends Thread {
                 String state;
                 if (recorder.isActive()) {
                     if (blocked) release(gear == GEAR_REVERSE ? "reverse" : "stock camera");
+                    else if (carOff) release("ignition off");
                     else if (disabled) release("turned off");
                     else if (viewing) release("player open");
-                    state = recorder.isActive() ? "recording" : disabled ? "off" : viewing ? "paused" : "reverse";
+                    state = recorder.isActive() ? "recording" : carOff ? "caroff" : disabled ? "off"
+                            : viewing ? "paused" : "reverse";
+                } else if (carOff) {
+                    state = "caroff";
                 } else if (disabled) {
                     state = "off";
                 } else if (viewing) {
@@ -151,6 +164,24 @@ final class Guard extends Thread {
                 SystemClock.sleep(POLL_MS);
             }
         }
+    }
+
+    /**
+     * True if the ignition is off: at once on the first reading, so a head unit that started up
+     * with the car off never opens the camera; after that, once it has read off for
+     * IGNITION_OFF_POLLS polls in a row. If the car can't say, it counts as on.
+     */
+    private boolean carOff() {
+        Boolean on = Car.ignitionOn();
+        if (on == null) on = true;
+        if (on) ignitionOffPolls = 0;
+        else if (lastIgnition == null) ignitionOffPolls = IGNITION_OFF_POLLS;
+        else ignitionOffPolls = Math.min(ignitionOffPolls + 1, IGNITION_OFF_POLLS);
+        if (!on.equals(lastIgnition)) {
+            Log.i("ignition " + (on ? "on" : "off") + " (" + Car.describe() + ")");
+            lastIgnition = on;
+        }
+        return ignitionOffPolls >= IGNITION_OFF_POLLS;
     }
 
     /** The stock app is about to open the rear camera: let go of it now. */
@@ -287,8 +318,8 @@ final class Guard extends Thread {
 
     /**
      * What the player app shows: "recording", "reverse" (the camera is with the reverse view),
-     * "off", "nodrive" or "starting", and since when. Written only when it changes, readable by
-     * any app. The heartbeat's age says whether the recorder is running at all.
+     * "caroff" (ignition off), "off", "nodrive" or "starting", and since when. Written only when
+     * it changes, readable by any app. The heartbeat's age says whether the recorder is running.
      */
     private void writeStatus(String state) {
         if (state.equals(lastState)) return;

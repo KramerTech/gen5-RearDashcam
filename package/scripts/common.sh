@@ -37,4 +37,16 @@ kill_recorder() {
     _pid=$(recorder_pid) || return 0
     log "killing recorder $_pid: $1"
     "$NEMESIS" root $SYSTEM_UID -c "kill -9 $_pid"
+    restore_guide_lines
+}
+
+# The recorder turns the camera's guide lines off while recording, with a marker file saying so
+# (GuideLines.java). If it was killed meanwhile, turn them back on: IPgsService
+# .requestGuideLineState(2), transaction 0x21.
+restore_guide_lines() {
+    [ -f "$STATE/guidelines-hidden" ] || return 0
+    if service call com.hkmc.micom.pgs 33 i32 2 > /dev/null; then
+        rm -f "$STATE/guidelines-hidden"
+        log "turned the guide lines back on"
+    fi
 }

@@ -21,6 +21,8 @@ final class Config implements Cloneable {
     int segmentSeconds = 60;
     /** Oldest segments are deleted to keep at least this share of the drive free. */
     int minFreePercent = 5;
+    /** Flip the picture left to right: the backup camera sends a mirror image. */
+    boolean mirror = true;
     /** Set if recordings come out with red and blue swapped. */
     boolean swapUv = false;
     /** Debugging: run the camera without encoding, or the encoder on blank frames without the camera. */
@@ -32,6 +34,14 @@ final class Config implements Cloneable {
      * screens can show the recorder at work.
      */
     String[] pauseFor = {"org.smarttube.stable"};
+    /** Turn off the camera's parking guide lines while recording (they're drawn into the video). */
+    boolean hideGuideLines = true;
+    /**
+     * "Input device name:key code" of the button that saves the last saveSeconds when pressed
+     * four times quickly (the steering wheel's mute); empty turns it off.
+     */
+    String saveButton = "daudio_wp_daudioplus_neev23_us:37";
+    int saveSeconds = 120;
     /** Recording turned on in the app. */
     boolean enabled = true;
     /**
@@ -59,9 +69,13 @@ final class Config implements Cloneable {
                 case "bitrate": c.bitrate = Integer.parseInt(v); break;
                 case "segment": c.segmentSeconds = Integer.parseInt(v); break;
                 case "min-free-percent": c.minFreePercent = Integer.parseInt(v); break;
+                case "mirror": c.mirror = Boolean.parseBoolean(v); break;
                 case "swap-uv": c.swapUv = Boolean.parseBoolean(v); break;
                 case "debug-no-encode": c.debugNoEncode = Boolean.parseBoolean(v); break;
                 case "debug-no-camera": c.debugNoCamera = Boolean.parseBoolean(v); break;
+                case "hide-guide-lines": c.hideGuideLines = Boolean.parseBoolean(v); break;
+                case "save-button": c.saveButton = v; break;
+                case "save-seconds": c.saveSeconds = Integer.parseInt(v); break;
                 case "pause-for": c.pauseFor = v.isEmpty() ? new String[0] : v.split(","); break;
                 case "app-conf": c.appConf = v; break;
                 case "viewing-lease": c.viewingLease = v; break;
@@ -129,7 +143,8 @@ final class Config implements Cloneable {
     @Override
     public String toString() {
         return width + "x" + height + "@" + fps + " " + bitrate / 1000 + " kbit/s, " + segmentSeconds
-                + " s segments in " + outDir + " (keep " + minFreePercent + "% free)" + (swapUv ? ", swap-uv" : "")
+                + " s segments in " + outDir + " (keep " + minFreePercent + "% free)" + (mirror ? ", mirrored" : "")
+                + (swapUv ? ", swap-uv" : "")
                 + (enabled ? "" : ", turned off");
     }
 }

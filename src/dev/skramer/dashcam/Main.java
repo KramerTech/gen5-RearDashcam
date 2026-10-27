@@ -17,8 +17,16 @@ public final class Main {
     private static final int SDCARD_R_GID = 1028;
 
     public static void main(String[] args) throws Exception {
+        Config config = Config.parse(args);
+        final Recorder[] recorder = new Recorder[1];
+        SaveButton saveButton = SaveButton.open(config, new Runnable() {  // needs root; see SaveButton
+            @Override
+            public void run() {
+                if (recorder[0] != null) recorder[0].saveRecent();
+            }
+        });
         dropRoot();
-        Config config = Config.parse(args).withAppSettings();
+        config = config.withAppSettings();
         try {
             android.os.Process.class.getMethod("setArgV0", String.class).invoke(null, "dashcam");
         } catch (Throwable t) {
@@ -26,8 +34,11 @@ public final class Main {
         }
         Looper.prepareMainLooper();
         Log.i("starting: " + config);
-        Recorder recorder = new Recorder(config, new Handler());
-        new Guard(config, recorder).start();
+        Log.i("car: " + Car.describe());
+        new GuideLines(config).restore();  // a previous recorder may have died with them off
+        recorder[0] = new Recorder(config, new Handler());
+        new Guard(config, recorder[0]).start();
+        if (saveButton != null) saveButton.start();
         Looper.loop();
     }
 
