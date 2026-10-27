@@ -40,6 +40,10 @@ Everything is in the `Dashcam` folder on the USB drive, one file per minute, nam
 
 **If your backup camera ever doesn't come up when you reverse, uninstall the dashcam and report it.** The log is at `/data/nemesis/dashcam.log`.
 
+## How it works
+
+The details, settings files and limits are in [TECHNICAL.md](TECHNICAL.md).
+
 ## License
 
 MIT ([`LICENSE`](LICENSE)).
