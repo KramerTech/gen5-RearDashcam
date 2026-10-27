@@ -1,0 +1,26 @@
+[nemesis]
+version=@VERSION@
+id=dashcam
+name=Rear Dashcam
+types=application,service
+preuninstall=scripts/preun.sh
+
+[app.0]
+kind=apk
+path=app/DashcamPlayer.apk
+package=dev.skramer.dashcam.player
+component=dev.skramer.dashcam.player/dev.skramer.dashcam.player.MainActivity
+
+[service.0]
+name=recorder
+kind=sh
+path=svc/recorder.sh
+uid=root
+mode=restart
+
+[service.1]
+name=watchdog
+kind=sh
+path=svc/watchdog.sh
+uid=root
+mode=restart

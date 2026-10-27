@@ -1,0 +1,20 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="bg">#0E1116</color>
+    <color name="panel">#181C23</color>
+    <color name="tile">#1F242D</color>
+    <color name="tile_empty">#14171D</color>
+    <color name="button">#262C36</color>
+    <color name="button_pressed">#3A4352</color>
+    <color name="button_disabled">#1A1E25</color>
+    <color name="text">#F2F4F7</color>
+    <color name="text_dim">#9AA3AF</color>
+    <color name="text_faint">#5B6470</color>
+    <color name="footage">#3B82F6</color>
+    <color name="saved">#F5A524</color>
+    <color name="track">#2A303A</color>
+    <color name="rec">#EF4444</color>
+    <color name="ok">#22C55E</color>
+    <color name="warn">#F59E0B</color>
+    <color name="selected">#26324A</color>
+</resources>

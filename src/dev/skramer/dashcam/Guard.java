@@ -1,0 +1,339 @@
+package dev.skramer.dashcam;
+
+import android.app.ActivityManagerNative;
+import android.content.IIntentReceiver;
+import android.content.Intent;
+import android.content.IntentFilter;
+import android.os.Bundle;
+import android.os.Handler;
+import android.os.IBinder;
+import android.os.Looper;
+import android.os.ServiceManager;
+import android.os.SystemClock;
+import java.io.File;
+import java.io.FileInputStream;
+import java.io.FileOutputStream;
+import java.io.IOException;
+import java.lang.reflect.Method;
+import java.nio.charset.StandardCharsets;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
+
+/**
+ * Keeps the stock reverse view working. The dashcam and the stock rear camera share one video
+ * input, and while the dashcam holds it the stock view can't open at all. So the camera is
+ * released whenever the stock app wants it (it broadcasts CAMERA_APP_START, for reverse and for
+ * the camera button) or the gear reads R, and only taken back once the gear is out of R and the
+ * stock app has closed its camera. If a release hangs, the process kills itself, which frees the
+ * camera too; the service script restarts it. The heartbeat file lets the watchdog service kill
+ * a process that stopped responding altogether.
+ *
+ * The CAMERA_APP_START receiver is a second line: this firmware's ActivityManager skips
+ * receivers registered without an app process, so on Gen5W it's the gear polling (which reads 1
+ * for the camera button too) that does the work.
+ *
+ * The player app's settings file turns recording off and on; changing recording settings in it
+ * restarts the recorder (the service script starts it again). While the player is open it keeps
+ * a lease file fresh, and recording pauses: with the camera running, video playback on this unit
+ * shows flashes of corrupt frames. For the same reason it pauses while another video app
+ * (Config.pauseFor) is in front. The status file says what the recorder is doing.
+ */
+final class Guard extends Thread {
+    private static final String STOCK_CAMERA_START = "com.hkmc.intent.action.CAMERA_APP_START";
+    private static final int GEAR_REVERSE = 1;
+    private static final long POLL_MS = 250;
+    /** After the last reverse or stock-camera signal, wait this long before taking the camera back. */
+    private static final long SETTLE_MS = 3000;
+    private static final long RELEASE_TIMEOUT_MS = 800;
+    private static final long RETRY_MS = 5000;
+    /** The player renews its lease every 2 s; a lease older than this has lapsed (app gone). */
+    private static final long LEASE_MS = 6000;
+
+    private final Config config;
+    private final Recorder recorder;
+    private final Storage storage;
+    private final Handler main = new Handler(Looper.getMainLooper());
+    private final File heartbeat, status, appConf, viewingLease;
+    private final Method gearStatus;
+    private final StockCameraWatcher watcher = new StockCameraWatcher();
+    private final Runnable startRecorder = new Runnable() {
+        @Override
+        public void run() {
+            recorder.start();
+        }
+    };
+    private volatile long lastBlockMs = -SETTLE_MS;
+    private boolean disabled;
+    private long appConfModified;
+    /** The video app in front (Config.pauseFor), or null. */
+    private String videoAppInFront;
+    private Method getTasks;
+    private int lastGear = -1;
+    private String lastState;
+
+    Guard(Config config, Recorder recorder) {
+        super("guard");
+        this.config = config;
+        this.recorder = recorder;
+        storage = new Storage(config);
+        heartbeat = new File(config.stateDir, "heartbeat");
+        status = new File(config.stateDir, "status");
+        appConf = new File(config.appConf);
+        viewingLease = new File(config.viewingLease);
+        appConfModified = appConf.lastModified();
+        disabled = !config.enabled;
+        gearStatus = gearMethod();
+        setDaemon(true);
+    }
+
+    @Override
+    public void run() {
+        try {
+            ActivityManagerNative.getDefault().registerReceiver(
+                    null, null, watcher, new IntentFilter(STOCK_CAMERA_START), null, 0);
+            Log.i("listening for " + STOCK_CAMERA_START);
+        } catch (Throwable t) {
+            Log.e("can't listen for the stock camera; the camera button won't work while recording", t);
+        }
+        if (disabled) Log.i("recording is turned off in the app");
+        boolean wasViewing = false;
+        long nextStart = 0;
+        boolean mounted = true;
+        for (long beat = 0; ; beat++) {
+            try {
+                long now = SystemClock.uptimeMillis();
+                int gear = gear();
+                if (gear != lastGear) {
+                    Log.i("gear status " + gear);
+                    lastGear = gear;
+                }
+                if (gear == GEAR_REVERSE) lastBlockMs = now;
+                boolean blocked = now - lastBlockMs < SETTLE_MS;
+                if (beat % 4 == 0) checkAppSettings();
+                if (beat % 4 == 0) videoAppInFront = videoAppInFront();
+                boolean viewing = viewing() || videoAppInFront != null;
+                if (viewing != wasViewing) {
+                    Log.i(viewing ? (videoAppInFront != null ? videoAppInFront : "the player") + " is open; pausing"
+                            : "video app closed");
+                    wasViewing = viewing;
+                }
+                String state;
+                if (recorder.isActive()) {
+                    if (blocked) release(gear == GEAR_REVERSE ? "reverse" : "stock camera");
+                    else if (disabled) release("turned off");
+                    else if (viewing) release("player open");
+                    state = recorder.isActive() ? "recording" : disabled ? "off" : viewing ? "paused" : "reverse";
+                } else if (disabled) {
+                    state = "off";
+                } else if (viewing) {
+                    state = "paused";
+                } else if (blocked) {
+                    state = "reverse";
+                } else {
+                    if (now >= nextStart) {
+                        nextStart = now + RETRY_MS;
+                        mounted = storage.mounted();
+                        if (!mounted) {
+                            if (beat % 120 == 0) Log.i("waiting for " + config.mount);
+                        } else if (stockCameraOpen()) {
+                            lastBlockMs = now;  // the stock view is still up; check again after SETTLE_MS
+                        } else {
+                            main.post(startRecorder);
+                        }
+                    }
+                    state = mounted ? "starting" : "nodrive";
+                }
+                writeStatus(state);
+                if (beat % 4 == 0) writeHeartbeat(beat / 4);
+                SystemClock.sleep(POLL_MS);
+            } catch (Throwable t) {
+                Log.e("guard loop", t);
+                SystemClock.sleep(POLL_MS);
+            }
+        }
+    }
+
+    /** The stock app is about to open the rear camera: let go of it now. */
+    void onStockCamera() {
+        lastBlockMs = SystemClock.uptimeMillis();
+        if (recorder.isActive()) release("stock camera");
+    }
+
+    /** Stops the recorder on the camera thread; if that doesn't finish in time, dies instead. */
+    private synchronized void release(String why) {
+        if (!recorder.isActive()) return;
+        Log.i("releasing the camera: " + why);
+        CountDownLatch done = new CountDownLatch(1);
+        main.postAtFrontOfQueue(new Runnable() {
+            @Override
+            public void run() {
+                recorder.stop();
+                done.countDown();
+            }
+        });
+        boolean ok;
+        try {
+            ok = done.await(RELEASE_TIMEOUT_MS, TimeUnit.MILLISECONDS);
+        } catch (InterruptedException e) {
+            ok = false;
+        }
+        if (!ok) {
+            Log.e("camera release took over " + RELEASE_TIMEOUT_MS + " ms; exiting to free it", null);
+            android.os.Process.killProcess(android.os.Process.myPid());
+        }
+    }
+
+    /** RearCamera.getGearStatus(): asks the Cortex-M (/dev/tcc_cm_ctrl); 1 is reverse. */
+    private static Method gearMethod() {
+        try {
+            return Class.forName("android.hardware.RearCamera").getMethod("getGearStatus");
+        } catch (Throwable t) {
+            Log.e("no RearCamera.getGearStatus(); relying on the stock camera broadcast alone", t);
+            return null;
+        }
+    }
+
+    private int gear() {
+        if (gearStatus == null) return -1;
+        try {
+            return (Integer) gearStatus.invoke(null);
+        } catch (Throwable t) {
+            return -1;
+        }
+    }
+
+    /** True if the stock app has the rear camera open, per the rear camera service's dump. */
+    private boolean stockCameraOpen() {
+        IBinder service = ServiceManager.getService("media.rearcamera");
+        if (service == null) return false;
+        File dump = new File(config.stateDir, "rearcamera.txt");
+        try {
+            try (FileOutputStream out = new FileOutputStream(dump)) {
+                service.dump(out.getFD(), new String[0]);
+            }
+            byte[] b = new byte[(int) Math.min(dump.length(), 64 * 1024)];
+            try (FileInputStream in = new FileInputStream(dump)) {
+                int n = in.read(b);
+                return n > 0 && new String(b, 0, n, StandardCharsets.UTF_8).contains("Device is open");
+            }
+        } catch (Throwable t) {
+            Log.e("can't check the rear camera service", t);
+            return false;
+        }
+    }
+
+    /**
+     * Picks up a change to the app's settings file: on/off now; anything else by letting go of
+     * the camera and exiting, so the service script starts a recorder with the new settings.
+     */
+    private void checkAppSettings() {
+        long m = appConf.lastModified();
+        if (m == appConfModified) return;
+        appConfModified = m;
+        Config fresh = config.withAppSettings();
+        saveSettingsCopy();
+        if (!fresh.recordingSettings().equals(config.recordingSettings())) {
+            Log.i("settings changed in the app; restarting with " + fresh);
+            release("restarting");
+            System.exit(0);
+        }
+        if (fresh.enabled == !disabled) return;
+        disabled = !fresh.enabled;
+        Log.i("recording turned " + (fresh.enabled ? "on" : "off") + " in the app");
+    }
+
+    /** Copies the app's settings file to the state directory, so they outlive a reinstall of the app. */
+    private void saveSettingsCopy() {
+        if (!appConf.isFile()) return;
+        File copy = config.savedSettings(), tmp = new File(config.stateDir, "settings.tmp");
+        try (FileInputStream in = new FileInputStream(appConf); FileOutputStream out = new FileOutputStream(tmp)) {
+            byte[] b = new byte[4096];
+            for (int n; (n = in.read(b)) > 0; ) out.write(b, 0, n);
+        } catch (IOException e) {
+            Log.e("can't keep a copy of the app's settings", e);
+            return;
+        }
+        if (!tmp.renameTo(copy)) Log.w("can't replace " + copy);
+    }
+
+    /** The package of the front task if it's a video app, else null. */
+    private String videoAppInFront() {
+        if (config.pauseFor.length == 0) return null;
+        try {
+            Object am = ActivityManagerNative.getDefault();
+            if (getTasks == null) {
+                for (Method m : am.getClass().getMethods()) {
+                    if (m.getName().equals("getTasks") && m.getParameterTypes().length == 3) getTasks = m;
+                }
+                if (getTasks == null) throw new NoSuchMethodException("IActivityManager.getTasks");
+            }
+            java.util.List<?> tasks = (java.util.List<?>) getTasks.invoke(am, 1, 0, null);
+            if (tasks == null || tasks.isEmpty()) return null;
+            android.content.ComponentName top = ((android.app.ActivityManager.RunningTaskInfo) tasks.get(0)).topActivity;
+            if (top == null) return null;
+            for (String p : config.pauseFor) if (p.equals(top.getPackageName())) return p;
+        } catch (Throwable t) {
+            Log.e("can't see the front app; not pausing for video apps", t);
+            config.pauseFor = new String[0];  // don't retry every second
+        }
+        return null;
+    }
+
+    /** True while the player app holds a fresh lease. */
+    private boolean viewing() {
+        long m = viewingLease.lastModified();
+        return m != 0 && Math.abs(System.currentTimeMillis() - m) < LEASE_MS;
+    }
+
+    /**
+     * What the player app shows: "recording", "reverse" (the camera is with the reverse view),
+     * "off", "nodrive" or "starting", and since when. Written only when it changes, readable by
+     * any app. The heartbeat's age says whether the recorder is running at all.
+     */
+    private void writeStatus(String state) {
+        if (state.equals(lastState)) return;
+        File tmp = new File(config.stateDir, "status.tmp");
+        String text = "state=" + state + "\nenabled=" + !disabled + "\nsince=" + System.currentTimeMillis() + "\nout=" + config.outDir
+                + "\nmount=" + config.mount + "\nfps=" + config.fps + "\nbitrate=" + config.bitrate
+                + "\nsegment=" + config.segmentSeconds + "\nminfree=" + config.minFreePercent + "\n";
+        try (FileOutputStream out = new FileOutputStream(tmp)) {
+            out.write(text.getBytes(StandardCharsets.US_ASCII));
+        } catch (IOException e) {
+            Log.e("can't write " + tmp, e);
+            return;
+        }
+        tmp.setReadable(true, false);
+        if (!tmp.renameTo(status)) {
+            Log.w("can't replace " + status);
+            return;
+        }
+        lastState = state;
+    }
+
+    /** "pid count": the watchdog service kills the process if the count stops changing. */
+    private void writeHeartbeat(long count) {
+        try (FileOutputStream out = new FileOutputStream(heartbeat)) {
+            out.write((android.os.Process.myPid() + " " + count + "\n").getBytes(StandardCharsets.US_ASCII));
+            // The watchdog runs as NEMESIS root, which can't read past file permissions.
+            if (count == 0) heartbeat.setReadable(true, false);
+        } catch (IOException e) {
+            if (count % 60 == 0) Log.e("can't write " + heartbeat, e);
+        }
+    }
+
+    /** Receives CAMERA_APP_START without an app Context, registered straight with the ActivityManager. */
+    private final class StockCameraWatcher extends IIntentReceiver.Stub {
+        @Override
+        public void performReceive(Intent intent, int resultCode, String data, Bundle extras,
+                boolean ordered, boolean sticky, int sendingUser) {
+            onStockCamera();
+            if (ordered) {
+                try {
+                    ActivityManagerNative.getDefault().finishReceiver(this, resultCode, data, extras, false);
+                } catch (Throwable t) {
+                    Log.e("finishReceiver", t);
+                }
+            }
+        }
+    }
+}

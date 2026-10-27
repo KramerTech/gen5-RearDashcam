@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Dashcam</string>
+    <string name="driving">Dashcam playback is not available while driving</string>
+</resources>
