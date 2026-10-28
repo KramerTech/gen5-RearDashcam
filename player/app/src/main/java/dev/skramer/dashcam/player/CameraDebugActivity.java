@@ -12,6 +12,9 @@ import android.view.Gravity;
 import android.view.View;
 import android.view.ViewGroup;
 import android.widget.Button;
+import android.text.SpannableString;
+import android.text.Spanned;
+import android.text.style.ForegroundColorSpan;
 import android.widget.FrameLayout;
 import android.widget.ImageButton;
 import android.widget.LinearLayout;
@@ -43,7 +46,7 @@ import java.util.Locale;
  * <p>
  * The log mixes this screen's lines ("app") with the recorder's ("rec"). "Scan RAM" maps which
  * parts of the camera's memory are changing, to find where, and at what size, frames are written.
- * "Save report" puts the log, a scan, the recorder's report (camera list, kernel log, logcat) and
+ * "Save Report" puts the log, a scan, the recorder's report (camera list, kernel log, logcat) and
  * the current picture on the USB drive.
  */
 public final class CameraDebugActivity extends Activity {
@@ -67,6 +70,8 @@ public final class CameraDebugActivity extends Activity {
     private RamView picture;
     private LinearLayout cameraRow, sizeRow;
     private Button reportButton;
+    private Button nullRecordingToggle;
+    private boolean nullRecordingOn, leaseSuspended;
     /** The last frame drawn, for the report's picture. */
     private volatile byte[] latest;
     private volatile int latestW, latestH;
@@ -76,7 +81,8 @@ public final class CameraDebugActivity extends Activity {
     private long seen = -1;
     private String report = "", lastState;
     private volatile String lastScan = "";
-    private long reportAsked, stoppedAt;
+    private long reportAsked;
+    private volatile long stoppedAt;
     private String recSize;
     private HashMap<String, String> rec = new HashMap<>();
     private long lastFrames = -1, lastFramesAt;
@@ -98,8 +104,8 @@ public final class CameraDebugActivity extends Activity {
         dp = getResources().getDisplayMetrics().density;
         setContentView(build());
         log("camera debug " + appVersion() + " on " + Build.DISPLAY);
-        log("the recorder runs the camera for this screen; recording pauses until it closes");
-        log("to test: wait 10 s, press the camera button (in park) for a few seconds, close the stock view, wait 10 s, Save report");
+        log("preview pauses saved recording; Record to /dev/null keeps the camera and encoder running");
+        log("to test: wait 10 s, press the camera button (in park) for a few seconds, close the stock view, wait 10 s, Save Report");
         viewer = new Thread("ram view") {
             @Override
             public void run() {
@@ -134,12 +140,17 @@ public final class CameraDebugActivity extends Activity {
     protected void onStart() {
         super.onStart();
         stoppedAt = 0;
+        leaseSuspended = false;
     }
 
     @Override
     protected void onStop() {
         super.onStop();
         stoppedAt = SystemClock.uptimeMillis();
+        if (nullRecordingOn || RecorderLink.nullRecording(this)) {
+            leaseSuspended = true;
+            new File(getFilesDir(), RecorderLink.DEBUG).delete();
+        }
     }
 
     @Override
@@ -185,7 +196,7 @@ public final class CameraDebugActivity extends Activity {
             }
         });
         bar.addView(back, new LinearLayout.LayoutParams(px(72), px(56)));
-        TextView title = text("Camera debug", 24, R.color.text);
+        TextView title = text("Camera Debug", 24, R.color.text);
         title.setTypeface(null, Typeface.BOLD);
         LinearLayout.LayoutParams tl = new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1);
         tl.leftMargin = px(16);
@@ -198,15 +209,34 @@ public final class CameraDebugActivity extends Activity {
                 requestScan();
             }
         });
-        bar.addView(scan, barButton());
         reportButton = new Button(this);
-        reportButton.setText("Save report");
+        reportButton.setText("Save Report");
         reportButton.setOnClickListener(new View.OnClickListener() {
             @Override
             public void onClick(View v) {
                 askReport();
             }
         });
+        nullRecordingToggle = new Button(this);
+        styleNullToggle(false);
+        nullRecordingToggle.setVisibility(View.GONE);
+        nullRecordingToggle.setEnabled(false);
+        nullRecordingToggle.setOnClickListener(new View.OnClickListener() {
+            @Override public void onClick(View button) {
+                boolean checked = !nullRecordingOn;
+                try {
+                    RecorderLink.setNullRecording(CameraDebugActivity.this, checked);
+                    if (checked) { camera = "auto"; size = SIZES[0]; updatePicks(); }
+                    log(checked ? "Recording to /dev/null; camera and encoder continue after leaving this page"
+                            : "Null recording disabled");
+                } catch (IOException e) {
+                    log("can't change null recording: " + e);
+                }
+                updateNullToggle();
+            }
+        });
+        bar.addView(nullRecordingToggle, barButton());
+        bar.addView(scan, barButton());
         bar.addView(reportButton, barButton());
         root.addView(bar, new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, px(72)));
 
@@ -322,14 +352,38 @@ public final class CameraDebugActivity extends Activity {
                 finish();  // out of sight: let the recorder go back to recording
                 return;
             }
+            updateNullToggle();
             writeRequest();
             readRecorder();
             ui.postDelayed(this, POLL_MS);
         }
     };
 
+    private void updateNullToggle() {
+        boolean mounted = RecorderLink.driveMounted(RecorderLink.read().mount);
+        if (mounted) {
+            try { RecorderLink.setNullRecording(this, false); }
+            catch (IOException e) { log("can't clear null recording request: " + e); }
+        }
+        boolean on = !mounted && RecorderLink.nullRecording(this);
+        if (on != nullRecordingOn) styleNullToggle(on);
+        nullRecordingOn = on;
+        nullRecordingToggle.setEnabled(!mounted);
+        nullRecordingToggle.setVisibility(mounted ? View.GONE : View.VISIBLE);
+    }
+
+    private void styleNullToggle(boolean on) {
+        SpannableString label = new SpannableString((on ? "●" : "○") + "  Record to /dev/null");
+        label.setSpan(new ForegroundColorSpan(on ? 0xFF22C55E : getResources().getColor(R.color.text_dim)),
+                0, 1, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
+        nullRecordingToggle.setText(label);
+        nullRecordingToggle.setActivated(false);
+        nullRecordingToggle.setContentDescription("Record to /dev/null, " + (on ? "on" : "off"));
+    }
+
     /** The request, rewritten every poll: that's also what keeps it fresh. */
     private void writeRequest() {
+        if (leaseSuspended) return;
         File dir = getFilesDir();
         File tmp = new File(dir, RecorderLink.DEBUG + ".tmp");
         String text = "camera=" + camera + "\nsize=" + size + "\nseen=" + seen + "\nreport=" + report + "\n";
@@ -389,7 +443,15 @@ public final class CameraDebugActivity extends Activity {
         }
         rec = s;
         enableCameras(s.get("cameras"));
-        boolean session = "debug".equals(state);
+        boolean session = "debug".equals(state) || "recording-null".equals(state);
+        for (LinearLayout row : new LinearLayout[] {cameraRow, sizeRow}) {
+            for (int i = 0; i < row.getChildCount(); i++) {
+                View child = row.getChildAt(i);
+                if (child.getTag() != null && (row == sizeRow || child.getTag().equals("auto")))
+                    child.setEnabled(!nullRecordingOn);
+                else if (child.getTag() != null && nullRecordingOn) child.setEnabled(false);
+            }
+        }
         recSize = session ? s.get("size") : null;
         if (s.containsKey("mirror")) mirror = !"false".equals(s.get("mirror"));
         String sz = recSize != null ? recSize : size;
@@ -580,6 +642,14 @@ public final class CameraDebugActivity extends Activity {
         String kind = null, detail = "", unfit = null, glError = null;
         try {
             while (running) {
+                // The encoder can keep running behind AA; the hidden debug preview
+                // must not keep copying/uploading another 30 full frames per second.
+                if (stoppedAt != 0) {
+                    first = true;
+                    writing = completed = shownSlot = -1;
+                    SystemClock.sleep(200);
+                    continue;
+                }
                 if (viewW != w || viewH != h) {
                     w = viewW;
                     h = viewH;

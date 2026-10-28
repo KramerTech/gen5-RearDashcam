@@ -24,3 +24,10 @@ kind=sh
 path=svc/watchdog.sh
 uid=root
 mode=restart
+
+[service.2]
+name=overlay
+kind=sh
+path=svc/overlay.sh
+uid=root
+mode=restart

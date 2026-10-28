@@ -148,3 +148,24 @@ JNIEXPORT void JNICALL Java_dev_skramer_dashcam_Native_copyScaled(JNIEnv *env, j
     if (c != NULL) (*env)->ReleasePrimitiveArrayCritical(env, cols, c, JNI_ABORT);
     if (r != NULL) (*env)->ReleasePrimitiveArrayCritical(env, rows, r, JNI_ABORT);
 }
+
+/* Same 32-bit hash as Java, reading the four DMA strips in one JNI call. */
+void hash_strips(const uint8_t *address, size_t stride, int count, uint32_t hashes[4]) {
+    uint32_t strip[count];
+    for (int slot = 0; slot < 4; slot++) {
+        /* Bulk reads halve uncached DMA read time on this head unit. Hash the
+         * cached copy rather than interleaving arithmetic with device loads. */
+        memcpy(strip, address + slot * stride, (size_t)count * 4);
+        uint32_t hash = 1;
+        for (int i = 0; i < count; i++) hash = 31u * hash + strip[i];
+        hashes[slot] = hash;
+    }
+}
+
+JNIEXPORT void JNICALL Java_dev_skramer_dashcam_Native_hashStrips(JNIEnv *env, jclass cls __attribute__((unused)),
+        jlong address, jlong stride, jint count, jintArray hashes) {
+    if (count < 1 || count > 640 || stride < (jlong)count * 4 || (*env)->GetArrayLength(env, hashes) < 4) return;
+    uint32_t result[4];
+    hash_strips((const uint8_t *)(intptr_t)address, (size_t)stride, count, result);
+    (*env)->SetIntArrayRegion(env, hashes, 0, 4, (const jint *)result);
+}

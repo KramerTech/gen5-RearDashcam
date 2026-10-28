@@ -129,7 +129,7 @@ final class CameraDebug {
         b.append("time=").append(System.currentTimeMillis()).append("\nstate=").append(state)
                 .append("\ngear=").append(gear).append("\ntype=").append(type)
                 .append("\ncameras=").append(cameras).append("\nreport=").append(reportDone).append('\n');
-        if (recorder.isActive() && recorder.isDebug()) b.append(recorder.debugStatus());
+        if (recorder.isActive()) b.append(recorder.debugStatus());
         b.append(Log.since(q.seen));
         write(status, b.toString());
     }
@@ -151,6 +151,7 @@ final class CameraDebug {
         section(b, "dmesg (camera lines)", filter(run("dmesg"), LOG_KEEP, 400));
         section(b, "logcat (camera lines; the system uid's own, as the recorder can see)",
                 filter(run("logcat", "-d", "-v", "time"), LOG_KEEP, 2000));
+        section(b, "camera overlay helper log (last 100 lines)", lastLines("/data/nemesis/dashcam-overlay.log", 100));
         section(b, "recorder log", Log.since(-1).replaceAll("(?m)^log\\.\\d+=", ""));
         b.append("collected in ").append(SystemClock.uptimeMillis() - t0).append(" ms\n");
         write(report, b.toString());
@@ -230,6 +231,22 @@ final class CameraDebug {
             b.append("(").append(e).append(")\n");
         }
         return b.toString();
+    }
+
+    /** The last max lines of a file. */
+    private static String lastLines(String path, int max) {
+        ArrayDeque<String> lines = new ArrayDeque<>();
+        try (BufferedReader in = new BufferedReader(new FileReader(path))) {
+            for (String line; (line = in.readLine()) != null; ) {
+                lines.add(line);
+                if (lines.size() > max) lines.removeFirst();
+            }
+        } catch (IOException e) {
+            return "(" + e + ")\n";
+        }
+        StringBuilder b = new StringBuilder();
+        for (String l : lines) b.append(l).append('\n');
+        return b.length() > 0 ? b.toString() : "(empty)\n";
     }
 
     private static String firstLine(String path) {

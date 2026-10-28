@@ -4,12 +4,12 @@ The details behind the [README](README.md), for the curious and for anyone debug
 
 ## The pieces
 
-The package installs two things:
+The package has two main pieces:
 
 - **The recorder**, a background service with no screen. NEMESIS starts it at boot as `svc/recorder.sh`, which runs `dashcam.jar` under `app_process`. It starts as root, keeps the steering-wheel key device open, then switches to the system user (uid 1000) with group `sdcard_r`, so it can use the camera and write to the USB drive.
 - **The Dashcam app** (`dev.skramer.dashcam.player`), for watching recordings and turning recording on and off. The app and the recorder only talk through files (see [Files](#files)).
 
-A second service, `svc/watchdog.sh`, kills the recorder if it stops responding (see [Reverse](#reverse-and-the-camera-button)).
+Two more NEMESIS services support the recorder: `svc/watchdog.sh` kills it if it stops responding (see [Reverse](#reverse-and-the-camera-button)), and `svc/overlay.sh` starts the native display helper with the boot-time privileges needed to hide the camera layer (see [Projection](#projection-and-the-camera-display-layer)).
 
 ## Recording
 
@@ -20,15 +20,16 @@ A second service, `svc/watchdog.sh`, kills the recorder if it stops responding (
 - The picture comes out as the reverse view shows it: mirrored, with the parking guide lines drawn in. The guide lines are switched off while recording (see [Parking guide lines](#parking-guide-lines)), and frames are mirrored back when they're converted.
 - Copying frames out is the biggest cost: about 23 ms a frame, half a CPU core at 20 fps. The camera memory isn't System RAM, so the kernel maps it strongly-ordered (uncached, no burst reads) whatever we ask for; it's read with one `memcpy` per frame, which is as fast as that memory allows. At 720×480 and 20 fps the recorder uses a little over half of one core (of four).
 - Every 30 seconds the log gets a line on how heavy recording is: frame rate, milliseconds per frame to copy out and to convert, frames lost, and CPU use from `/proc`: the recorder (and its busiest threads), mediaserver (where the camera service and the H.264 encoder run), the whole system, and the load average. The GPU isn't measured: the kernel has no load counters for it, and recording doesn't use it.
+- Frame-detection strip hashing runs in native C in one JNI call for all four buffers, with the same 32-bit hashes and Java fallback. It reuses its buffers and preserves the existing capture cadence.
 - Frames are kept down to the chosen frame rate on an even cadence. They're converted to I420 and mirrored left to right in the same pass, in C with NEON (`libdashcam.so`, about 1 ms a frame; the head unit's Dalvik VM took 12 ms in Java, which is still the fallback), straight into the encoder's input buffer, then passed to the head unit's hardware H.264 encoder (`OMX.TCC.ENC.avc`), with a keyframe every second.
 - Encoded video is written as MPEG-TS files, one per minute by default, named by start time (`20261026_220609.ts`). A new file always starts on a keyframe. The file is synced to the drive every second, so a sudden power cut loses at most about a second.
 - There's no audio; the camera has none.
 - Before each new file, the oldest files in the `Dashcam` folder are deleted until the chosen share of the drive is free. Files in `Saved` and `Snapshots` are never touched.
-- Recording waits until the drive is mounted at `/storage/usb0`, so it never fills the head unit's internal storage.
+- Normal recording waits until the drive is mounted at `/storage/usb0`, so it never fills the head unit's internal storage. The explicit `/dev/null` test mode runs the encoder without saving files.
 
 ### Settings
 
-The app has one setting: recording on or off (tap the status at the top of the main screen). Everything else is fixed, at what's been tested: 720×480 at 20 fps, 3 Mbit/s (about 1.35 GB an hour), one file a minute, and 5% of the drive kept free.
+Normal recording has one setting: on or off (tap the status at the top of the main screen). Camera Debug also offers an explicit `/dev/null` test mode when no drive is mounted. Recording quality is fixed, at what's been tested: 720×480 at 20 fps, 3 Mbit/s (about 1.35 GB an hour), one file a minute, and 5% of the drive kept free.
 
 To experiment, the recorder takes arguments in `/data/nemesis/apps/dashcam/dashcam.conf` (`DASHCAM_ARGS="--fps=15"`). Updating the package replaces that file.
 
@@ -70,7 +71,7 @@ The head unit doesn't only run while you drive. It also starts up when you unloc
 
 Only one program can have the camera at a time, and while the dashcam has it, the car's backup view can't open.
 
-- Four times a second, the recorder reads the gear (`RearCamera.getGearStatus()`, which also reports the camera button). In reverse it lets go of the camera at once. It takes the camera back 3 seconds after the last reverse reading, and only once the car's camera app has closed it (checked through the rear camera service's status).
+- While it owns the camera, the recorder reads the gear every 50 ms (`RearCamera.getGearStatus()`, which also reports the camera button); idle and passive recording use a 250 ms interval. In reverse it lets go of the camera at once. It takes the camera back 3 seconds after the last reverse reading, and only once the car's camera app has closed it (checked through the rear camera service's status).
 - If the car's camera app tries to open the camera before the dashcam has let go, it fails and tries again every half second, for up to 15 seconds.
 - **Recording goes on through reverse.** The car's camera app runs the camera the same way, and its frames land in the same memory ring, at its own size (1140×720 on the analog-camera IONIQ 5). After letting go, the recorder samples that memory for a third of a second at a time until frames show up, and works out their size: the one for which every change has its counterparts in the other three frames of the ring, from a list of likely sizes. It then copies those frames out, reading only the rows it needs and scaling them to the recording size, into the same file. The guide lines are back on for you, so they're in this part. There's a gap of about a second while the camera changes hands, and another while the recorder takes it back; if no size fits, nothing is recorded until then. Each reverse ends with a log line: how long, the frame size, frames recorded.
 - Letting go has 0.8 s to finish. If it doesn't, the recorder kills itself, which frees the camera too, and NEMESIS starts it again.
@@ -98,12 +99,16 @@ Only one program can have the camera at a time, and while the dashcam has it, th
 | `Dashcam/Saved/` | saved recordings, plus `names.txt` |
 | `Dashcam/Snapshots/` | snapshots from the player, as JPEG |
 | `/data/nemesis/dashcam.log` | the recorder's log (rotated at 1 MB) |
-| `/data/nemesis/dashcam/status` | what the recorder is doing (recording, reversing, debug, reverse, caroff, off, nodrive, starting), for the app |
+| `/data/nemesis/dashcam/status` | state (recording, recording-null, reversing, debug, reverse, caroff, off, nodrive, starting), configured enabled state, drive presence and null-test request, for the app |
 | `/data/nemesis/dashcam/debug`, `debug-report.txt` | the debug session's state and recent log lines, and the recorder's part of a debug report, for the camera debug screen |
 | `/data/nemesis/dashcam/settings` | the recorder's copy of the app's setting (recording on or off) |
 | `/data/nemesis/dashcam/heartbeat` | for the watchdog |
+| `/data/nemesis/dashcam-overlay.log` | native display helper startup, refusals and alpha changes; rotated at 1 MiB |
+| `/data/nemesis/dashcam/null-recording-cancelled` | request token cancelled by USB insertion, preventing automatic reactivation |
+| `/data/nemesis/apps/dashcam/dashcam-overlay` | boot-started native display helper executable |
 | `/data/nemesis/dashcam/guidelines-hidden` | present while the recorder has the guide lines off |
 | `/data/data/dev.skramer.dashcam.player/files/recorder.conf` | the app's setting: `enabled=true` or `false` |
+| `/data/data/dev.skramer.dashcam.player/files/null-recording` | explicit null-test request token; removed when the app turns testing off |
 | `/data/data/dev.skramer.dashcam.player/files/debug` | the camera debug screen's request (camera, size, report), rewritten every half second while it's open |
 | `Dashcam/camera-debug-*.txt`, `.png` on the drive | debug reports and the picture at the time |
 
@@ -118,13 +123,155 @@ Only one program can have the camera at a time, and while the dashcam has it, th
 - Like the stock apps, it follows the car's driving restriction (`com.hkmc.regulation`) and only works in Park.
 - Renaming uses a keyboard built into the app, the same one as the Tilepad launcher's.
 
-## Camera debug
+## Camera Debug
 
-**Camera debug** (long-press the drive space at the top right of the main screen) is for working out why a car records blank video. While it's open, the recorder stops recording and runs a debug session instead: the camera and size chosen on the screen (whether or not recording is on, and without a drive), checked like recording frames but not encoded. It still hands the camera to the reverse view.
+**Camera Debug** (long-press the drive space at the top right of the main screen) is for working out why a car records blank video. By default, while it's open, the recorder pauses saved recording and runs a debug session instead: the camera and size chosen on the screen (whether or not recording is on, and without a drive), checked like recording frames but not encoded. It still hands the camera to the reverse view.
 
 - **Picture:** the screen maps the camera's memory itself, read-only, and draws completed frames as they arrive (up to 30 a second) with OpenGL, mirrored back like recordings. Debug sessions turn the guide lines off too, so frames from the stock view's session are the ones with guide lines. Because it reads the memory directly, it also shows frames the stock reverse view's session writes.
 - **Log:** its own lines (`app`) and the recorder's (`rec`), timed to the millisecond: when frames start and stop arriving, when the picture appears or goes flat, the recorder's camera start, parameters, video signal and hand-offs. Press the camera button with the screen open, and the log shows whether the picture appeared before or after the recorder let go of the camera.
 - **Scan RAM** (also run when the screen opens and whenever frames start or stop) samples every 16 KiB of `rearcamera` and `rearcamera_viqe` for a second. It lists which ranges change and what they hold, and guesses the frame size from how far the changing part reaches.
-- **Save report** writes `Dashcam/camera-debug-<time>.txt` and a `.png` of the picture. The text holds the log, the last scan, the camera list, `/proc/pmap`, the rear camera service's dump, camera-related lines from `getprop`, `dmesg` and the recorder's logcat, and the recorder's recent log. The recorder runs as the system user, so its logcat includes the stock camera app's lines but not mediaserver's.
-- Leaving the screen ends the session; recording starts again a few seconds later.
+- **Save Report** writes `Dashcam/camera-debug-<time>.txt` and a `.png` of the picture. The text holds the log, the last scan, the camera list, `/proc/pmap`, the rear camera service's dump, camera-related lines from `getprop`, `dmesg` and the recorder's logcat, and the recorder's recent log. The recorder runs as the system user, so its logcat includes the stock camera app's lines but not mediaserver's.
+- Closing the screen ends the preview session; normal recording resumes when eligible. The explicit null-test request continues independently after leaving the page.
 - After a minute out of sight, the screen closes itself.
+
+## Projection and the camera display layer
+
+On the tested NEEV23/tcc803x head unit (`wp_daudioplus_neev23_us`, 1920×720),
+RDMA0 is the UI, RDMA1 is the camera, and normal wired Android Auto video uses
+RDMA3. The camera's direct-display plane sits above projected video, so keeping
+the camera open for recording used to cover Android Auto. The native helper
+makes the camera plane transparent while DMA keeps feeding camera RAM. Recording
+continues with normal video cropping and UI composition. Overlay priority, video
+routing and SurfaceFlinger settings are not changed.
+
+### Boot privileges and register mapping
+
+NEMESIS registers the helper as service `overlay` in `NEMESIS.data`, with
+`uid=root`, `kind=sh`, and `mode=restart`. `svc/overlay.sh` waits for Android boot,
+waits 10 seconds, rotates its log, sets executable permission on `dashcam-overlay`
+(NEMESIS extracts it without execute permission), and starts it. The recorder
+allows up to 12 seconds for its socket to appear on the matching display-tree
+hierarchy before continuing.
+
+The helper needs **CAP_SYS_RAWIO** to open `/dev/mem`. NEMESIS services started
+at boot have it; a service started later by an install or `nemesis service start`
+does not. `nemesis root` alone does not supply that capability either.
+**Reboot after installing or updating the package.** Without register access,
+the recorder logs that overlay control is unavailable and continues recording.
+The temporary experimental `rootq` package is not needed.
+
+Before mapping registers, the helper reads big-endian device-tree cells:
+
+- `/proc/device-tree/fbdisplay@12000000/reg` must start at `0x12000000` and cover
+  at least `0x2000` bytes.
+- `fbdisplay0@12000000/telechips,rdma` beneath that node must list RDMA 0, 1, 2, 3
+  after its phandle. These checks gate the hardware layout, not a model whitelist.
+- `/proc/pmap` must provide a valid `rearcamera` memory region.
+
+A different layout or missing camera region leaves the helper asleep without
+mapping registers. With the matching layout, it maps only `0x2000` bytes at
+physical `0x12000000`, read/write with `O_SYNC`, then closes the device descriptor.
+It switches to uid/gid **1000**, dropping root capabilities, before listening.
+The existing mapping remains usable after that privilege drop. There is no
+persistent kernel, firmware, or device-permission patch.
+
+The register offsets were checked against this head unit's kernel; older
+published Telechips headers have different offsets. Before each hide request,
+the helper checks an enabled BGRA RDMA1, even dimensions within its supported
+range, the requested size, the frame address and four-buffer ring bounds against
+`rearcamera`, and a 1920×720 mixer size.
+
+| Address | Use |
+|---|---|
+| `0x12000500` | RDMA1 CTRL: alpha enable bit 11, alpha select bit 24, update bit 16; preserve DMA enable bit 28 and other fields |
+| `0x12000508` | Read camera dimensions |
+| `0x1200050c` | Read camera frame base address |
+| `0x12000524` | RDMA1 constant alpha fields, mask `0x00ff00ff` |
+| `0x12001808` | Read WMIX0 dimensions; require `0x02d00780` (1920×720) |
+
+It saves the alpha fields and selection/enable bits, zeros both constant alpha
+values, enables alpha with select 0, and issues the RDMA update. The camera plane
+stays enabled and on screen so the DMA ring continues running. It does not write
+frame addresses, dimensions, the mixer's priority, or other display planes.
+
+### Camera ownership and recovery
+
+The helper listens on abstract Unix socket `dev.skramer.dashcam.overlay`; there
+is no socket file. `SO_PEERCRED` restricts clients to uid 1000. Its narrow protocol
+accepts a five-byte hide request (`H` plus big-endian 16-bit width and height),
+then a release byte. It accepts no arbitrary register addresses or commands.
+Partial initial requests time out after 500 ms.
+
+After `RearCam.startPreview`, `CameraOverlay` connects, requests transparency,
+and waits for acknowledgement. The connection stays open for that camera
+ownership period. Before `stopPreview`/`release`, including reverse and camera
+button handoff, the recorder asks for restoration and waits for acknowledgement.
+Client I/O has a 500 ms timeout so an unavailable helper cannot block camera
+release indefinitely; the guard retains its 800 ms release deadline.
+
+Socket closure or recorder death also restores alpha. SIGTERM, SIGINT and SIGHUP
+ask the helper to restore and exit. Restoration preserves the current DMA enable
+bit and respects a camera-driver reset: it only restores the saved alpha when
+the expected alpha selection and camera size are still present. Cleanup never
+re-enables a stopped camera plane. A forced SIGKILL cannot run cleanup; the
+camera driver's subsequent stop/start resets its layer configuration. Live
+writes are confined to volatile display registers, not persistent storage.
+
+Between ownership changes the helper blocks in socket I/O: no per-frame work,
+polling, shell commands, GPU rendering or frame copies. Its log is
+`/data/nemesis/dashcam-overlay.log`, rotated at 1 MiB. Refused requests include
+register values, and Camera Debug reports include its last 100 lines.
+
+Wired Android Auto, continuous camera capture, stock-camera handoff and recorder
+death recovery were checked on the NEEV23 unit. CarPlay and other units have not
+been validated in that session. `native/test.sh` checks conversion, strip hashing,
+and alpha guards/restoration against ordinary RAM rather than hardware registers.
+
+Reverse detection polls every 50 ms while the recorder owns the camera. Other
+guard work runs on a 250 ms cycle; ignition is checked on that cycle, settings
+and heartbeat once per second. Idle and passive recording keep the 250 ms gear
+interval. The stock-camera broadcast still releases immediately. Passive
+ownership is published before acknowledging release, preventing a duplicate
+handoff while cleanup finishes.
+
+## Wired projection testing without a USB drive
+
+The camera debug page has a **Record to /dev/null** toggle button, immediately
+left of **Scan RAM**, with an empty/green circle for off/on. It is visible
+only while the configured USB drive is not mounted. It starts the normal camera
+and hardware encoder and discards encoded output without allocating frame copies,
+writing segments, or consuming storage. It remains active after leaving the debug
+page, so wired Android Auto can use the USB port. The main screen says
+**Recording to /dev/null**; with testing off and no mounted drive it says
+**No Drive Detected**. Capacity is read only after checking `/proc/mounts`.
+
+The app writes a unique request token in its private files directory. The recorder
+cancels that token when a drive is mounted, records the cancellation in its state
+directory, and returns to normal drive recording. This works with the app closed
+and survives recorder restarts; removing the drive cannot reactivate an old test
+request. A new explicit toggle action is needed. The toggle is hidden and
+switched off with a drive present. Camera size/source controls are locked to the
+normal recording configuration during this test mode. Saving clips is unavailable
+because encoded output is discarded. Ignition and reverse handoff still apply.
+
+The debug preview stops reading camera RAM while its activity is hidden, avoiding
+a second full-frame copy loop behind AA. It resumes on returning to the page.
+`tests/null-recording.sh` verifies request cancellation and restart behavior.
+
+Tapping the main recording control during null recording cancels the test and
+leaves normal recording enabled, waiting for its USB drive. A hidden debug page
+suspends its preview lease during the test so it cannot restart a debug session
+after this cancellation. With no drive, Saved (0) and Play Latest are disabled
+and dimmed. The null-recording button uses the normal background in both states;
+only its empty/green indicator changes.
+
+The main recording button has a fixed width measured from all its status labels.
+Its indicator is green for null recording, red for recording to the drive, and amber
+while waiting. Neither recording toggle uses a selected border. Recording commands
+hold their pending display until acknowledged by the recorder, ignoring stale
+polls; the control becomes usable again after a ten-second timeout if no answer
+arrives. `tests/record-command.sh` covers stale polls, transitions and cancellation.
+
+Settings changes compare file length as well as modification time, because this
+KitKat build can timestamp consecutive writes in the same second. This prevents
+a fast enabled=true/false toggle from being missed.

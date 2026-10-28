@@ -7,6 +7,7 @@ import android.content.Intent;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.StatFs;
+import android.os.SystemClock;
 import android.view.View;
 import android.view.ViewGroup;
 import android.widget.AdapterView;
@@ -31,7 +32,7 @@ public final class MainActivity extends Activity {
     private ImageView statusDot;
     private TextView statusText, driveText, dayTitle, empty;
     private View statusToggle;
-    private Button savedButton;
+    private Button savedButton, latestButton;
     private ListView daysView;
     private DayView dayView;
     private View body;
@@ -41,12 +42,13 @@ public final class MainActivity extends Activity {
     private Library lib;
     private long selectedDay = -1;
     private long lastScan;
+    private RecordCommand pendingCommand;
 
     private final Runnable statusTick = new Runnable() {
         @Override
         public void run() {
             refresh(System.currentTimeMillis() - lastScan > RESCAN_MS);
-            handler.postDelayed(this, STATUS_MS);
+            handler.postDelayed(this, pendingCommand == null ? STATUS_MS : 250);
         }
     };
 
@@ -62,6 +64,12 @@ public final class MainActivity extends Activity {
         empty = (TextView) findViewById(R.id.empty);
         statusToggle = findViewById(R.id.statusToggle);
         savedButton = (Button) findViewById(R.id.savedButton);
+        latestButton = (Button) findViewById(R.id.latestButton);
+        savedButton.setEnabled(false);
+        latestButton.setEnabled(false);
+        savedButton.setAlpha(0.4f);
+        latestButton.setAlpha(0.4f);
+        fixRecordButtonWidth();
         daysView = (ListView) findViewById(R.id.days);
         dayView = (DayView) findViewById(R.id.dayView);
         body = findViewById(R.id.body);
@@ -90,23 +98,24 @@ public final class MainActivity extends Activity {
         statusToggle.setOnClickListener(new View.OnClickListener() {
             @Override
             public void onClick(View v) {
-                boolean on = !rec.enabled();
+                boolean cancelNull = rec.nullRecording || RecorderLink.nullRecording(MainActivity.this);
+                // Cancelling the test returns to normal recording, waiting for its drive.
+                boolean on = cancelNull || !rec.enabled();
                 RecorderLink.Settings s = RecorderLink.Settings.read(MainActivity.this);
                 s.enabled = on;
                 try {
+                    if (cancelNull) RecorderLink.setNullRecording(MainActivity.this, false);
                     s.write(MainActivity.this);
                 } catch (java.io.IOException e) {
                     Toast.makeText(MainActivity.this, "Couldn't save: " + e.getMessage(), Toast.LENGTH_LONG).show();
                     return;
                 }
+                pendingCommand = new RecordCommand(on, cancelNull, SystemClock.uptimeMillis());
                 statusToggle.setEnabled(false);
-                statusText.setText(on ? "Turning recording on…" : "Turning recording off…");
-                handler.postDelayed(new Runnable() {
-                    @Override
-                    public void run() {
-                        refresh(false);
-                    }
-                }, 1500);
+                statusDot.setColorFilter(0xFFF59E0B);
+                statusText.setText(commandText(pendingCommand));
+                handler.removeCallbacks(statusTick);
+                handler.post(statusTick);
             }
         });
         savedButton.setOnClickListener(new View.OnClickListener() {
@@ -122,7 +131,7 @@ public final class MainActivity extends Activity {
                 return true;
             }
         });
-        findViewById(R.id.latestButton).setOnClickListener(new View.OnClickListener() {
+        latestButton.setOnClickListener(new View.OnClickListener() {
             @Override
             public void onClick(View v) {
                 play(0);
@@ -148,6 +157,24 @@ public final class MainActivity extends Activity {
     protected void onDestroy() {
         super.onDestroy();
         io.shutdownNow();
+    }
+
+    /** Reserve the widest label once, using this screen's font metrics and density. */
+    private void fixRecordButtonWidth() {
+        String[] labels = {"The recorder isn't installed", "The recorder isn't running",
+                "Recording to /dev/null", "Recording since 23:59", "Recording the reverse camera",
+                "Paused for the camera debug screen", "Paused while the reverse camera is on",
+                "Recording is off", "Waiting for the car to be on", "Waiting for a USB drive",
+                "Starting the camera…", "Turning recording on…", "Turning recording off…"};
+        float widest = 0;
+        for (String label : labels) widest = Math.max(widest, statusText.getPaint().measureText(label));
+        ViewGroup.MarginLayoutParams text = (ViewGroup.MarginLayoutParams) statusText.getLayoutParams();
+        int width = (int)Math.ceil(widest) + statusToggle.getPaddingLeft() + statusToggle.getPaddingRight()
+                + statusDot.getLayoutParams().width + text.leftMargin + text.rightMargin
+                + statusText.getPaddingLeft() + statusText.getPaddingRight() + 2;
+        ViewGroup.LayoutParams params = statusToggle.getLayoutParams();
+        params.width = width;
+        statusToggle.setLayoutParams(params);
     }
 
     private void play(long wall) {
@@ -182,6 +209,7 @@ public final class MainActivity extends Activity {
 
     /** {total, free} bytes of the recording drive, or null if it isn't mounted. */
     private static long[] space(RecorderLink r) {
+        if (!RecorderLink.driveMounted(r.mount)) return null;
         try {
             StatFs fs = new StatFs(r.mount);
             long total = (long) fs.getBlockCount() * fs.getBlockSize();
@@ -203,12 +231,16 @@ public final class MainActivity extends Activity {
             text = "The recorder isn't running";
         } else {
             switch (rec.state == null ? "" : rec.state) {
+                case "recording-null":
+                    color = 0xFF22C55E;
+                    text = "Recording to /dev/null";
+                    break;
                 case "recording":
                     color = 0xFFEF4444;
                     text = "Recording since " + Fmt.hm(rec.since);
                     break;
                 case "reversing":
-                    color = 0xFFEF4444;
+                    color = rec.nullRecording ? 0xFF22C55E : 0xFFEF4444;
                     text = "Recording the reverse camera";
                     break;
                 case "debug":
@@ -237,13 +269,29 @@ public final class MainActivity extends Activity {
                     break;
             }
         }
+        if (pendingCommand != null) {
+            if (pendingCommand.waiting(rec.configuredEnabled, rec.state, rec.nullRecording, SystemClock.uptimeMillis())) {
+                color = 0xFFF59E0B;
+                text = commandText(pendingCommand);
+            } else {
+                pendingCommand = null;
+            }
+        }
         statusDot.setColorFilter(color);
         statusText.setText(text);
-        statusToggle.setActivated(rec.running && rec.enabled());
-        statusToggle.setEnabled(rec.running);
+        statusToggle.setActivated(false);
+        statusToggle.setEnabled(rec.running && pendingCommand == null);
+
+        boolean hasDrive = space != null;
+        savedButton.setEnabled(hasDrive);
+        latestButton.setEnabled(hasDrive);
+        savedButton.setAlpha(hasDrive ? 1f : 0.4f);
+        latestButton.setAlpha(hasDrive ? 1f : 0.4f);
+        int events = hasDrive && lib != null ? lib.savedEvents().size() : 0;
+        savedButton.setText("Saved (" + events + ")");
 
         if (space == null) {
-            driveText.setText("No drive at " + rec.mount);
+            driveText.setText(RecorderLink.nullRecording(this) ? "Recording to /dev/null" : "No Drive Detected");
         } else {
             String s = Fmt.size(space[1]) + " free of " + Fmt.size(space[0]);
             if (lib != null) {
@@ -258,11 +306,14 @@ public final class MainActivity extends Activity {
         }
     }
 
+    private static String commandText(RecordCommand command) {
+        return command.cancelNull ? "Waiting for a USB drive"
+                : command.enabled ? "Turning recording on…" : "Turning recording off…";
+    }
+
     private void bindLibrary() {
         List<Long> list = lib.days();
         days.set(list);
-        int events = lib.savedEvents().size();
-        savedButton.setText(events == 0 ? "Saved" : "Saved (" + events + ")");
         if (list.isEmpty()) {
             body.setVisibility(View.GONE);
             empty.setVisibility(View.VISIBLE);

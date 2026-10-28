@@ -54,6 +54,9 @@ javac -source 8 -target 8 -Xlint:-options -bootclasspath "$ANDROID_JAR" -cp "$wo
 "$CC" -O3 -mfpu=neon -mfloat-abi=softfp -fPIC -shared -Wall -Wextra -Werror -Wl,--hash-style=both -s \
     -o "$work/libdashcam.so" "$HERE/native/dashcam.c"
 
+"$CC" -O2 -Wall -Wextra -Werror -Wl,--hash-style=both -s \
+    -o "$work/dashcam-overlay" "$HERE/native/overlay.c"
+
 # Player app
 (cd "$HERE/player" && ANDROID_HOME=$ANDROID_HOME ./gradlew -q assembleRelease -PdashcamVersion="$VERSION")
 "$BT/apksigner" sign --ks "$KEYSTORE" --ks-key-alias dashcam --ks-pass "$KS_PASS" --min-sdk-version 19 \
@@ -68,6 +71,7 @@ stage=$work/package
 cp -R "$HERE/package" "$stage"
 cp "$work/dashcam.jar" "$stage/dashcam.jar"
 cp "$work/libdashcam.so" "$stage/libdashcam.so"
+cp "$work/dashcam-overlay" "$stage/dashcam-overlay"
 mkdir -p "$stage/app"
 cp "$work/DashcamPlayer.apk" "$stage/app/DashcamPlayer.apk"
 cp "$HERE/LICENSE" "$stage/LICENSE"

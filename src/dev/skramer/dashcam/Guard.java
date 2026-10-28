@@ -47,7 +47,8 @@ import java.util.concurrent.TimeUnit;
 final class Guard extends Thread {
     private static final String STOCK_CAMERA_START = "com.hkmc.intent.action.CAMERA_APP_START";
     private static final int GEAR_REVERSE = 1;
-    private static final long POLL_MS = 250;
+    /** While we own the camera, detect reverse within 50 ms; other work stays at 250 ms. */
+    private static final long POLL_MS = 50, STATE_POLL_MS = 250;
     /** After the last reverse or stock-camera signal, wait this long before taking the camera back. */
     private static final long SETTLE_MS = 3000;
     private static final long RELEASE_TIMEOUT_MS = 800;
@@ -63,10 +64,13 @@ final class Guard extends Thread {
     private final Method gearStatus;
     private final StockCameraWatcher watcher = new StockCameraWatcher();
     private final CameraDebug cameraDebug;
+    private final NullRecording nullTest;
+    private boolean driveMounted;
+    private volatile boolean nullRequested;
     private final Runnable startRecorder = new Runnable() {
         @Override
         public void run() {
-            recorder.start();
+            if (nullRequested) recorder.startNull(); else recorder.start();
         }
     };
     private final Runnable takeBack = new Runnable() {
@@ -77,7 +81,7 @@ final class Guard extends Thread {
     };
     private volatile long lastBlockMs = -SETTLE_MS;
     private boolean disabled;
-    private long appConfModified;
+    private long appConfModified, appConfLength;
     private int lastGear = -1;
     private int ignitionOffPolls;
     private Boolean lastIgnition;
@@ -92,8 +96,10 @@ final class Guard extends Thread {
         status = new File(config.stateDir, "status");
         appConf = new File(config.appConf);
         appConfModified = appConf.lastModified();
+        appConfLength = appConf.length();
         disabled = !config.enabled;
         cameraDebug = new CameraDebug(config);
+        nullTest = new NullRecording(config);
         gearStatus = gearMethod();
         setDaemon(true);
     }
@@ -111,7 +117,8 @@ final class Guard extends Thread {
         boolean wasDebugging = false;
         long nextStart = 0;
         boolean mounted = true;
-        for (long beat = 0; ; beat++) {
+        long nextStatePoll = 0;
+        for (long beat = 0; ; ) {
             try {
                 long now = SystemClock.uptimeMillis();
                 int gear = gear();
@@ -119,29 +126,42 @@ final class Guard extends Thread {
                     Log.i("gear status " + gear);
                     lastGear = gear;
                 }
-                if (gear == GEAR_REVERSE) lastBlockMs = now;
+                if (gear == GEAR_REVERSE) {
+                    lastBlockMs = now;
+                    if (recorder.isActive() && !recorder.isPassive()) handOff("reverse");
+                }
+                if (now < nextStatePoll) {
+                    SystemClock.sleep(recorder.isActive() && !recorder.isPassive() ? POLL_MS : STATE_POLL_MS);
+                    continue;
+                }
+                nextStatePoll = now + STATE_POLL_MS;
                 boolean carOff = carOff();
                 boolean blocked = now - lastBlockMs < SETTLE_MS;
                 if (beat % 4 == 0) checkAppSettings();
+                if (beat % 4 == 0 || nullRequested) driveMounted = storage.mounted();
+                boolean requested = nullTest.requested(driveMounted);
+                if (requested != nullRequested) { nullRequested = requested; nextStart = 0; }
                 final CameraDebug.Request debug = cameraDebug.read();
+                boolean wantDebug = debug != null && !nullRequested;
                 if ((debug != null) != wasDebugging) {
                     Log.i(debug != null ? "camera debug screen open" : "camera debug screen closed");
                     wasDebugging = debug != null;
                     if (debug == null) cameraDebug.end();
                 }
                 // The debug screen overrides recording being off.
-                boolean off = disabled && debug == null;
+                boolean off = disabled && !wantDebug && !nullRequested;
                 String state;
                 if (recorder.isActive()) {
-                    if (blocked) {
-                        if (!recorder.isPassive()) handOff(gear == GEAR_REVERSE ? "reverse" : "stock camera");
-                    } else if (carOff) {
+                    if (carOff) {
                         release("ignition off");
-                    } else if (debug != null ? !recorder.isDebug() || !debug.matches(recorder) : recorder.isDebug()) {
-                        release(debug != null ? "camera debug" : "camera debug closed");
+                    } else if (recorder.isNullRecording() != nullRequested ||
+                            (wantDebug ? !recorder.isDebug() || !debug.matches(recorder) : recorder.isDebug())) {
+                        release("recording/debug mode changed");
                         nextStart = 0;
                     } else if (off) {
                         release("turned off");
+                    } else if (blocked) {
+                        if (!recorder.isPassive()) handOff(gear == GEAR_REVERSE ? "reverse" : "stock camera");
                     } else if (recorder.isPassive() && now >= nextStart) {
                         nextStart = now + RETRY_MS;
                         if (stockCameraOpen()) {
@@ -152,7 +172,8 @@ final class Guard extends Thread {
                         }
                     }
                     state = !recorder.isActive() ? (carOff ? "caroff" : off ? "off" : blocked ? "reverse" : "starting")
-                            : recorder.isDebug() ? "debug" : recorder.isPassive() ? "reversing" : "recording";
+                            : recorder.isDebug() ? "debug" : recorder.isPassive() ? "reversing"
+                            : recorder.isNullRecording() ? "recording-null" : "recording";
                 } else if (carOff) {
                     state = "caroff";
                 } else if (off) {
@@ -162,13 +183,13 @@ final class Guard extends Thread {
                 } else {
                     if (now >= nextStart) {
                         nextStart = now + RETRY_MS;
-                        mounted = debug != null || storage.mounted();
+                        mounted = wantDebug || nullRequested || driveMounted;
                         if (!mounted) {
                             if (beat % 120 == 0) Log.i("waiting for " + config.mount);
                         } else if (stockCameraOpen()) {
                             Log.i("the stock view still has the camera; waiting");
                             lastBlockMs = now;  // the stock view is still up; check again after SETTLE_MS
-                        } else if (debug != null) {
+                        } else if (wantDebug) {
                             main.post(new Runnable() {
                                 @Override
                                 public void run() {
@@ -184,10 +205,11 @@ final class Guard extends Thread {
                 writeStatus(state);
                 if (debug != null) cameraDebug.update(debug, state, gear, recorder);
                 if (beat % 4 == 0) writeHeartbeat(beat / 4);
-                SystemClock.sleep(POLL_MS);
+                beat++;
+                SystemClock.sleep(recorder.isActive() && !recorder.isPassive() ? POLL_MS : STATE_POLL_MS);
             } catch (Throwable t) {
                 Log.e("guard loop", t);
-                SystemClock.sleep(POLL_MS);
+                SystemClock.sleep(STATE_POLL_MS);
             }
         }
     }
@@ -313,9 +335,12 @@ final class Guard extends Thread {
 
     /** Picks up recording being turned on or off in the app. */
     private void checkAppSettings() {
-        long m = appConf.lastModified();
-        if (m == appConfModified) return;
+        long m = appConf.lastModified(), length = appConf.length();
+        // KitKat can report file timestamps only to the second. enabled=true/false
+        // have different lengths, so rapid toggles must also compare the length.
+        if (m == appConfModified && length == appConfLength) return;
         appConfModified = m;
+        appConfLength = length;
         Config fresh = config.withAppSettings();
         saveSettingsCopy();
         if (fresh.enabled == !disabled) return;
@@ -344,11 +369,13 @@ final class Guard extends Thread {
      * it changes, readable by any app. The heartbeat's age says whether the recorder is running.
      */
     private void writeStatus(String state) {
-        if (state.equals(lastState)) return;
+        String key = state + " " + driveMounted + " " + nullRequested + " " + disabled;
+        if (key.equals(lastState)) return;
         File tmp = new File(config.stateDir, "status.tmp");
         String text = "state=" + state + "\nenabled=" + !disabled + "\nsince=" + System.currentTimeMillis() + "\nout=" + config.outDir
                 + "\nmount=" + config.mount + "\nfps=" + config.fps + "\nbitrate=" + config.bitrate
-                + "\nsegment=" + config.segmentSeconds + "\nminfree=" + config.minFreePercent + "\n";
+                + "\nsegment=" + config.segmentSeconds + "\nminfree=" + config.minFreePercent
+                + "\ndrive=" + driveMounted + "\nnullrecording=" + nullRequested + "\n";
         try (FileOutputStream out = new FileOutputStream(tmp)) {
             out.write(text.getBytes(StandardCharsets.US_ASCII));
         } catch (IOException e) {
@@ -360,7 +387,7 @@ final class Guard extends Thread {
             Log.w("can't replace " + status);
             return;
         }
-        lastState = state;
+        lastState = key;
     }
 
     /** "pid count": the watchdog service kills the process if the count stops changing. */

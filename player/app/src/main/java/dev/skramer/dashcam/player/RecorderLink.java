@@ -19,6 +19,7 @@ final class RecorderLink {
     static final String CONF = "recorder.conf";
     /** The camera debug screen's request; see CameraDebugActivity. */
     static final String DEBUG = "debug";
+    static final String NULL_RECORDING = "null-recording";
     /** The heartbeat is rewritten every second while the recorder runs. */
     private static final long HEARTBEAT_STALE_MS = 10_000;
 
@@ -26,6 +27,8 @@ final class RecorderLink {
     String state;
     long since;
     boolean running;
+    boolean nullRecording;
+    Boolean configuredEnabled;
     String out = "/storage/usb0/Dashcam";
     String mount = "/storage/usb0";
     int fps = 20, bitrate = 3_000_000, segment = 60, minFreePercent = 5;
@@ -42,6 +45,8 @@ final class RecorderLink {
                 try {
                     switch (k) {
                         case "state": r.state = v; break;
+                        case "nullrecording": r.nullRecording = Boolean.parseBoolean(v); break;
+                        case "enabled": r.configuredEnabled = Boolean.parseBoolean(v); break;
                         case "since": r.since = Long.parseLong(v); break;
                         case "out": r.out = v; break;
                         case "mount": r.mount = v; break;
@@ -61,8 +66,48 @@ final class RecorderLink {
         return r;
     }
 
+    /** StatFs alone reports the backing internal filesystem when USB is absent. */
+    static boolean driveMounted(String mount) {
+        try (BufferedReader in = new BufferedReader(new FileReader("/proc/mounts"))) {
+            for (String line; (line = in.readLine()) != null; ) {
+                String[] parts = line.split("\\s+");
+                if (parts.length > 1 && parts[1].equals(mount)) return true;
+            }
+        } catch (IOException ignored) { }
+        return false;
+    }
+
+    static boolean nullRecording(Context context) {
+        String request = token(new File(context.getFilesDir(), NULL_RECORDING));
+        return !request.isEmpty() && !request.equals(token(new File(STATE, "null-recording-cancelled")));
+    }
+
+    static void setNullRecording(Context context, boolean enabled) throws IOException {
+        File dir = context.getFilesDir(), request = new File(dir, NULL_RECORDING);
+        if (!enabled) {
+            if (request.exists() && !request.delete()) throw new IOException("can't remove null recording request");
+            return;
+        }
+        if (driveMounted(read().mount)) throw new IOException("USB drive is connected");
+        File tmp = new File(dir, NULL_RECORDING + ".tmp");
+        try (FileOutputStream out = new FileOutputStream(tmp)) {
+            out.write(java.util.UUID.randomUUID().toString().getBytes(StandardCharsets.US_ASCII));
+        }
+        readableByRecorder(dir, tmp);
+        if (!tmp.renameTo(request)) throw new IOException("can't replace null recording request");
+    }
+
+    private static String token(File file) {
+        if (!file.isFile()) return "";
+        try (java.io.FileInputStream in = new java.io.FileInputStream(file)) {
+            byte[] bytes = new byte[64];
+            int n = in.read(bytes);
+            return n == 36 ? new String(bytes, 0, n, StandardCharsets.US_ASCII) : "";
+        } catch (IOException ignored) { return ""; }
+    }
+
     boolean enabled() {
-        return !"off".equals(state);
+        return configuredEnabled != null ? configuredEnabled : !"off".equals(state);
     }
 
     /** What the app asks of the recorder: recording on or off. Everything else is fixed. */

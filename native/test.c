@@ -48,6 +48,17 @@ int main(void) {
         free(a);
         free(b);
     }
+    uint32_t strips[4 * 257], hashes[4];
+    for (int i = 0; i < 4 * 257; i++) strips[i] = (uint32_t)rand() * (uint32_t)rand();
+    for (int count = 1; count <= 257; count += 16) {
+        hash_strips((uint8_t *)strips, 257 * 4, count, hashes);
+        for (int slot = 0; slot < 4; slot++) {
+            uint32_t expected = 1;
+            for (int i = 0; i < count; i++) expected = expected * 31u + strips[slot * 257 + i];
+            failed |= hashes[slot] != expected;
+        }
+    }
+    puts("batched DMA strip hashes checked against scalar reference");
     puts(failed ? "FAILED" : "ok");
     return failed;
 }

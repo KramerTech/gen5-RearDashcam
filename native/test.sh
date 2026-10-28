@@ -11,4 +11,7 @@ out=$(mktemp -d)
 trap 'rm -rf "$out"' EXIT
 "$CC" -O3 -mfpu=neon -mfloat-abi=softfp -Wall -Wextra -Werror -o "$out/convert-test" "$HERE/test.c" "$HERE/dashcam.c"
 $ADB push "$out/convert-test" /data/local/tmp/dashcam-convert-test > /dev/null
-$ADB shell 'chmod 755 /data/local/tmp/dashcam-convert-test && /data/local/tmp/dashcam-convert-test; rm /data/local/tmp/dashcam-convert-test'
+$ADB shell 'chmod 755 /data/local/tmp/dashcam-convert-test && /data/local/tmp/dashcam-convert-test; result=$?; rm /data/local/tmp/dashcam-convert-test; exit $result'
+"$CC" -O2 -Wall -Wextra -Werror -o "$out/overlay-test" "$HERE/overlay_test.c"
+$ADB push "$out/overlay-test" /data/local/tmp/dashcam-overlay-test > /dev/null
+$ADB shell 'chmod 755 /data/local/tmp/dashcam-overlay-test && /data/local/tmp/dashcam-overlay-test; result=$?; rm /data/local/tmp/dashcam-overlay-test; exit $result'

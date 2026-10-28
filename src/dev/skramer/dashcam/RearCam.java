@@ -15,7 +15,11 @@ import java.lang.reflect.Proxy;
  * service and HAL the stock reverse view uses. Started with no preview surface or callbacks, the
  * HAL runs its direct-display path (startPreviewDD): the hardware deinterlaces and scales the
  * picture to the preview size and writes it to {@link CameraRam}. It also puts it on a display
- * plane, under the home screen, where it doesn't show.
+ * plane, under the screen's UI, where it doesn't show.
+ * <p>
+ * Hardware video layers are under that plane (the kernel fixes the order), so Android Auto's
+ * and CarPlay's projected video can show the camera on top while recording. CameraOverlay
+ * makes our plane transparent without stopping DMA, restoring it before stock camera handoff.
  * <p>
  * Never give it a preview surface: setPreviewTexture then startPreview hangs this HAL, and the
  * camera service then turns the reverse view away until the head unit restarts.
@@ -27,12 +31,18 @@ import java.lang.reflect.Proxy;
  */
 final class RearCam {
     private static final String CLASS = "android.hardware.RearCamera";
-    /** The stock reverse view's parameters, with our size. A zero crop makes the HAL log an error it ignores. */
+    /**
+     * The stock reverse view's parameters, with our size. A zero crop makes the HAL log an error it
+     * ignores. The picture must stay on the screen: placed off it (a negative y passes the kernel's
+     * check), the display stops reading the memory ring, the camera stops writing new frames and
+     * the screen goes black.
+     */
     private static final String PARAMETERS = "crop-size=0x0;preview-overlay=140x0;preview-size=%dx%d;crop-position=0,0";
 
     private final Class<?> type;
     private final Object camera;
     private boolean previewing;
+    private final CameraOverlay overlay = new CameraOverlay();
 
     private RearCam(Class<?> type, Object camera) {
         this.type = type;
@@ -157,6 +167,7 @@ final class RearCam {
         timed("native_setParameters(" + p + ")", "native_setParameters", new Class<?>[] {String.class}, p);
         previewing = true;
         timed("startPreview", "startPreview", new Class<?>[0]);
+        overlay.hide(width, height);
     }
 
     /** Calls a method of the camera, logging how long it took and what it returned or threw. */
@@ -184,6 +195,7 @@ final class RearCam {
 
     /** Stops the camera and lets go of it, for the reverse view. */
     void release() {
+        overlay.restore();
         if (previewing) {
             previewing = false;
             try {

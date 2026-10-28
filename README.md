@@ -29,6 +29,8 @@ adb push dashcam-<version>.zip /data/local/tmp/
 adb shell '/system/xbin/nemesis install --update /data/local/tmp/dashcam-<version>.zip'
 ```
 
+After installing or updating version 0.15 or newer, reboot the head unit so the camera picture stops showing over Android Auto and CarPlay. If it still shows on your car, send a camera debug report (it includes the fix's log).
+
 To update, install the new version the same way. Your recordings, saved clips and the on/off setting are kept.
 
 ## Finding your recordings

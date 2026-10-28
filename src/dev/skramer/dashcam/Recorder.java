@@ -95,6 +95,7 @@ final class Recorder {
     private long endedCopies, endedCopyNs;
     /** The session: debug (not recording), camera and size. Read from other threads. */
     private volatile boolean debug;
+    private volatile boolean nullRecording;
     private volatile int cameraId = -1;
     private volatile String size = "";
     /** Debug sessions: the camera's video signal, the last frame's verdict and brightness, frames checked. */
@@ -185,6 +186,7 @@ final class Recorder {
 
     /** Saves the last few minutes, from any thread. */
     void saveRecent() {
+        if (nullRecording && active) { Notify.toast("Recording to /dev/null; no clips to save"); return; }
         writer.saveRecent();
     }
 
@@ -203,6 +205,14 @@ final class Recorder {
         return debug;
     }
 
+    /** Hardware encoding runs, but its output is discarded without files or queued copies. */
+    boolean isNullRecording() { return nullRecording; }
+
+    void startNull() {
+        nullRecording = true;
+        start(false, RearCam.stockId(), config.width, config.height);
+    }
+
     /** The session's camera. */
     int cameraId() {
         return cameraId;
@@ -215,11 +225,13 @@ final class Recorder {
 
     /** Starts recording, from the camera the stock view would open. */
     void start() {
+        nullRecording = false;
         start(false, RearCam.stockId(), config.width, config.height);
     }
 
     /** Starts a debug session: the camera and the feed, checked but not recorded. */
     void startDebug(int cameraId, int width, int height) {
+        nullRecording = false;
         start(true, cameraId, width, height);
     }
 
@@ -337,15 +349,17 @@ final class Recorder {
         if (feed != null) feed.running = false;
         camera.release();
         camera = null;
-        released.run();
-        handler.removeCallbacks(keepLinesOff);
-        if (guideLines != null) guideLines.restore();
-        endFeed();
-        passive = true;
         passiveSinceMs = SystemClock.uptimeMillis();
         passiveFirstFrameMs = 0;
         passiveEncoded = 0;
         passiveSize = null;
+        // Publish ownership loss before waking the faster guard. It must not enqueue
+        // another handoff while this thread is still finishing feed cleanup.
+        passive = true;
+        released.run();
+        handler.removeCallbacks(keepLinesOff);
+        if (guideLines != null) guideLines.restore();
+        endFeed();
         Log.i("camera released; recording the reverse view: looking for its frames");
         findStockFrames();
     }
@@ -509,7 +523,7 @@ final class Recorder {
         try {
             if (!active || from != feed || (!from.stock && System.nanoTime() < skipUntilNs)) return;
             String why = noPicture(argb);
-            if (debug) {
+            if (debug || nullRecording) {
                 picture = why == null ? "ok" : why;
                 luma = luma(argb);
                 checked++;
@@ -681,6 +695,10 @@ final class Recorder {
                     codecConfig = concat(bytes(f.getByteBuffer("csd-0")), bytes(f.getByteBuffer("csd-1")));
                 }
             } else if (o >= 0) {
+                if (nullRecording) {
+                    encoder.releaseOutputBuffer(o, false);
+                    continue;
+                }
                 ByteBuffer b = outputs[o];
                 b.position(info.offset);
                 b.limit(info.offset + info.size);
@@ -818,16 +836,25 @@ final class Recorder {
             long offset = ((long) (srcHeight / 16) * srcWidth + srcWidth / 3) * 4;
             int n = srcWidth / 3;
             int[] strip = new int[n];
+            int[] hashes = new int[CameraRam.SLOTS];
             int[] last = new int[CameraRam.SLOTS];
             boolean[] changed = new boolean[CameraRam.SLOTS];
             int writing = -1;
             for (boolean first = true; running; first = false) {
                 boolean started = false;
                 int count = 0, slot = -1;
+                if (Native.loaded) {
+                    Native.hashStrips(ram.address(offset, (CameraRam.SLOTS - 1) * frameBytes + n * 4L), frameBytes, n, hashes);
+                } else {
+                    for (int i = 0; i < CameraRam.SLOTS; i++) {
+                        ram.read(i * frameBytes + offset, strip, 0, n);
+                        int hash = 1;
+                        for (int p : strip) hash = 31 * hash + p;
+                        hashes[i] = hash;
+                    }
+                }
                 for (int i = 0; i < CameraRam.SLOTS; i++) {
-                    ram.read(i * frameBytes + offset, strip, 0, n);
-                    int h = 1;
-                    for (int p : strip) h = 31 * h + p;
+                    int h = hashes[i];
                     changed[i] = !first && h != last[i];
                     last[i] = h;
                     if (changed[i]) {

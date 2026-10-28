@@ -16,6 +16,15 @@ if [ -f "$LOG" ]; then
     set -- $(ls -l "$LOG")  # no wc here; toolbox ls -l puts the size in field 4
     [ "${4:-0}" -gt 1048576 ] && mv "$LOG" "$LOG.1"
 fi
+# Avoid missing the first camera session while the boot-started helper initializes.
+if [ -d /proc/device-tree/fbdisplay@12000000/fbdisplay0@12000000 ]; then
+    tries=0
+    while [ "$tries" -lt 12 ]; do
+        grep -q '@dev.skramer.dashcam.overlay' /proc/net/unix && break
+        tries=$((tries + 1))
+        sleep 1
+    done
+fi
 log "starting recorder"
 export CLASSPATH=$HERE/dashcam.jar
 exec app_process /system/bin dev.skramer.dashcam.Main $DASHCAM_ARGS >> "$LOG" 2>&1
