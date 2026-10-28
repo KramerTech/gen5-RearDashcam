@@ -13,6 +13,7 @@ final class Config implements Cloneable {
     String mount = "/storage/usb0";
     /** Writable by the recorder: heartbeat file and scratch files. */
     String stateDir = "/data/nemesis/dashcam";
+    /** Recording size; the camera hardware scales its picture to it. */
     int width = 720;
     int height = 480;
     /** The camera delivers 60 fps; frames are dropped down to this rate. */
@@ -21,8 +22,6 @@ final class Config implements Cloneable {
     int segmentSeconds = 60;
     /** Oldest segments are deleted to keep at least this share of the drive free. */
     int minFreePercent = 5;
-    /** Flip the picture left to right: the backup camera sends a mirror image. */
-    boolean mirror = true;
     /** Set if recordings come out with red and blue swapped. */
     boolean swapUv = false;
     /** Debugging: run the camera without encoding, or the encoder on blank frames without the camera. */
@@ -34,8 +33,6 @@ final class Config implements Cloneable {
      * screens can show the recorder at work.
      */
     String[] pauseFor = {"org.smarttube.stable"};
-    /** Turn off the camera's parking guide lines while recording (they're drawn into the video). */
-    boolean hideGuideLines = true;
     /**
      * "Input device name:key code" of the button that saves the last saveSeconds when pressed
      * four times quickly (the steering wheel's mute); empty turns it off.
@@ -69,11 +66,9 @@ final class Config implements Cloneable {
                 case "bitrate": c.bitrate = Integer.parseInt(v); break;
                 case "segment": c.segmentSeconds = Integer.parseInt(v); break;
                 case "min-free-percent": c.minFreePercent = Integer.parseInt(v); break;
-                case "mirror": c.mirror = Boolean.parseBoolean(v); break;
                 case "swap-uv": c.swapUv = Boolean.parseBoolean(v); break;
                 case "debug-no-encode": c.debugNoEncode = Boolean.parseBoolean(v); break;
                 case "debug-no-camera": c.debugNoCamera = Boolean.parseBoolean(v); break;
-                case "hide-guide-lines": c.hideGuideLines = Boolean.parseBoolean(v); break;
                 case "save-button": c.saveButton = v; break;
                 case "save-seconds": c.saveSeconds = Integer.parseInt(v); break;
                 case "pause-for": c.pauseFor = v.isEmpty() ? new String[0] : v.split(","); break;
@@ -81,6 +76,9 @@ final class Config implements Cloneable {
                 case "viewing-lease": c.viewingLease = v; break;
                 default: throw new IllegalArgumentException("unknown setting: " + k);
             }
+        }
+        if (c.width < 64 || c.height < 64 || c.width % 2 != 0 || c.height % 2 != 0) {
+            throw new IllegalArgumentException("bad size: " + c.width + "x" + c.height);
         }
         return c;
     }
@@ -143,7 +141,7 @@ final class Config implements Cloneable {
     @Override
     public String toString() {
         return width + "x" + height + "@" + fps + " " + bitrate / 1000 + " kbit/s, " + segmentSeconds
-                + " s segments in " + outDir + " (keep " + minFreePercent + "% free)" + (mirror ? ", mirrored" : "")
+                + " s segments in " + outDir + " (keep " + minFreePercent + "% free)"
                 + (swapUv ? ", swap-uv" : "")
                 + (enabled ? "" : ", turned off");
     }

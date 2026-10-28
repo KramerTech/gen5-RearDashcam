@@ -13,7 +13,6 @@ Turns your backup camera into a dashcam for Hyundai, Kia and Genesis cars with t
 
 ## What it changes in your car
 
-- The parking guide lines are switched off while it records, so they don't end up in the video, and back on when you reverse. If you had them off already, they stay off.
 - Recording pauses while you watch a recording or use SmartTube, because the car can't play video smoothly while the camera is recording.
 
 ## Install

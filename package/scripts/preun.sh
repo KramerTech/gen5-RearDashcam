@@ -5,7 +5,6 @@
 cd /data/nemesis/apps/dashcam || exit 0
 . ./scripts/common.sh
 kill_recorder "uninstalling"
-restore_guide_lines
 for f in "$STATE"/*; do
     case "$f" in */settings) ;; *) rm -rf "$f" ;; esac
 done

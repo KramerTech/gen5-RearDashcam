@@ -13,8 +13,10 @@ A second service, `svc/watchdog.sh`, kills the recorder if it stops responding (
 
 ## Recording
 
-- The backup camera is opened through Android's standard camera API, camera 0. Frames come in at 720×480, 59.94 Hz, in YUYV.
-- Frames are dropped down to the chosen frame rate on an even cadence. They're converted to I420 and mirrored left to right in the same pass, because the backup camera sends a mirror image. Then they go to the head unit's hardware H.264 encoder (`OMX.TCC.ENC.avc`), with a keyframe every second.
+- The recorder starts the backup camera the way the car's reverse view does: through the head unit's own rear camera service (`android.hardware.RearCamera`, camera 0), with the reverse view's parameters and the recording size (720×480). It never gives the camera a preview surface: on this HAL that path can hang the camera until a reboot.
+- Started like that, the camera runs in "direct display" mode. The hardware deinterlaces the picture, scales it to the recording size and writes each frame, as BGRA, into a ring of four buffers in memory the kernel reserves for the camera (`rearcamera` in `/proc/pmap`). It also puts it on a display layer, which the home screen covers. The recorder reads those buffers through `/dev/admem`, mapped read-only, which doesn't touch the camera driver.
+- Nothing signals a finished frame. A watcher thread looks at a strip near the top of each buffer every 2 ms: when one changes, the hardware has started writing it, so the buffer before it is complete. That one is copied out while the next three are written (about 50 ms), and dropped if it starts being written again during the copy.
+- Frames are kept down to the chosen frame rate on an even cadence, converted to I420 and passed to the head unit's hardware H.264 encoder (`OMX.TCC.ENC.avc`), with a keyframe every second.
 - Encoded video is written as MPEG-TS files, one per minute by default, named by start time (`20261026_220609.ts`). A new file always starts on a keyframe. The file is synced to the drive every second, so a sudden power cut loses at most about a second.
 - There's no audio; the camera has none.
 - Before each new file, the oldest files in the `Dashcam` folder are deleted until the chosen share of the drive is free. Files in `Saved` and `Snapshots` are never touched.
@@ -39,8 +41,7 @@ Less common options go in `/data/nemesis/apps/dashcam/dashcam.conf`, as argument
 |---|---|---|
 | `--out` | `/storage/usb0/Dashcam` | where recordings go |
 | `--mount` | `/storage/usb0` | recording waits until this is mounted |
-| `--mirror` | `true` | flip left to right |
-| `--hide-guide-lines` | `true` | turn the parking guide lines off while recording |
+| `--width`, `--height` | `720`, `480` | recording size; the camera hardware scales to it |
 | `--save-button` | `daudio_wp_daudioplus_neev23_us:37` | input device and key code for the save button; empty turns it off |
 | `--save-seconds` | `120` | how much the save button keeps |
 | `--pause-for` | `org.smarttube.stable` | apps (comma-separated) that pause recording while in front |
@@ -54,22 +55,14 @@ The head unit doesn't only run while you drive. It also starts up when you unloc
 - At startup, an "off" reading counts at once, so the camera is never opened. While recording, the ignition has to read off for about a second before the recorder stops.
 - Each change is logged together with the car's power status, boot mode and boot reason.
 
-**Frames with no picture are skipped too.** For about 25 seconds after the head unit starts, the camera delivers its capture buffers untouched: every pixel is exactly black with no color (Y=U=V=0, which shows as green) or exactly flat grey (Y=U=V=128). Real video, even pitch dark, always has some noise. The recorder checks a grid of 96 pixels in every frame and skips the frame if half or more are those exact values.
-
-## Parking guide lines
-
-The camera draws the guide lines into its own video, so they'd end up in every recording. The camera settings' "parking guidance" switch is the car's parking service (`com.hkmc.micom.pgs`): `IPgsService.requestGuideLineState()` sets it (1 off, 2 on) and `getRvmGuideLineState()` reads it.
-
-- Before opening the camera, the recorder reads the setting. Only if the lines are on does it turn them off, and it leaves a marker file (`guidelines-hidden`). It also drops the first 0.3 s of frames, because the camera takes about two frames to stop drawing them.
-- When it lets go of the camera, it turns them back on and removes the marker.
-- If the recorder is killed with the lines off, the marker is still there. The next recorder at startup, the watchdog after a kill, and an uninstall or update all turn them back on.
-- If you turned the lines off yourself, the recorder sees them off and never touches them.
+**Frames with no picture are skipped too.** For about 25 seconds after the head unit starts, the camera has no picture. If its buffers stop changing, nothing is recorded until they change again (and after a minute the camera is restarted). If they're flat, every pixel in a grid of 96 exactly the same color, the frame is skipped: real video, even pitch dark, always has some noise.
 
 ## Reverse and the camera button
 
 Only one program can have the camera at a time, and while the dashcam has it, the car's backup view can't open.
 
 - Four times a second, the recorder reads the gear (`RearCamera.getGearStatus()`, which also reports the camera button). In reverse it lets go of the camera at once. It takes the camera back 3 seconds after the last reverse reading, and only once the car's camera app has closed it (checked through the rear camera service's status).
+- If the car's camera app tries to open the camera before the dashcam has let go, it fails and tries again every half second, for up to 15 seconds.
 - Letting go has 0.8 s to finish. If it doesn't, the recorder kills itself, which frees the camera too, and NEMESIS starts it again.
 - The recorder updates a heartbeat file every second. If the heartbeat stops for about 6 seconds, the watchdog kills the recorder.
 
@@ -105,12 +98,11 @@ While the camera is recording, any video played on the head unit (the Dashcam ap
 | `/data/nemesis/dashcam/status` | what the recorder is doing (recording, paused, reverse, caroff, off, nodrive, starting), for the app |
 | `/data/nemesis/dashcam/settings` | the recorder's copy of the app's settings |
 | `/data/nemesis/dashcam/heartbeat` | for the watchdog |
-| `/data/nemesis/dashcam/guidelines-hidden` | present while the recorder has the guide lines off |
 | `/data/data/dev.skramer.dashcam.player/files/recorder.conf` | the app's settings |
 
 **Updates:** a NEMESIS update uninstalls the app before installing the new one, which wipes the app's own files. The recorder keeps a copy of the settings outside the app, and the update keeps that copy, so settings survive. Recordings and names are on the drive, so they're never affected.
 
-**Uninstalling** stops the recorder, puts the guide lines back if needed, and deletes everything under `/data/nemesis/dashcam`. Recordings on the drive stay.
+**Uninstalling** stops the recorder and deletes everything under `/data/nemesis/dashcam`. Recordings on the drive stay.
 
 ## The Dashcam app
 
