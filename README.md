@@ -44,6 +44,10 @@ Everything is in the `Dashcam` folder on the USB drive, one file per minute, nam
 
 The details, settings files and limits are in [TECHNICAL.md](TECHNICAL.md).
 
+## Development
+
+For a Windows or Linux development setup with an interactive emulator, see [DEVELOPMENT.md](DEVELOPMENT.md).
+
 ## License
 
 MIT ([`LICENSE`](LICENSE)).

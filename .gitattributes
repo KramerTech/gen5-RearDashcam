@@ -1,0 +1,4 @@
+dev/recorder-demo.sh text eol=lf
+build.sh text eol=lf
+player/gradlew text eol=lf
+dev/sample.ts binary

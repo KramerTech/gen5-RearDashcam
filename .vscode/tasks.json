@@ -1,0 +1,61 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "Dashcam: Run emulator",
+      "type": "process",
+      "command": "python",
+      "linux": { "command": "python3" },
+      "args": ["dev.py", "run"],
+      "options": { "cwd": "${workspaceFolder}" },
+      "problemMatcher": []
+    },
+    {
+      "label": "Dashcam: Build project",
+      "type": "process",
+      "command": "python",
+      "linux": { "command": "python3" },
+      "args": ["dev.py", "build"],
+      "options": { "cwd": "${workspaceFolder}" },
+      "group": { "kind": "build", "isDefault": true },
+      "problemMatcher": []
+    },
+    {
+      "label": "Dashcam: Test recorder",
+      "type": "process",
+      "command": "python",
+      "linux": { "command": "python3" },
+      "args": ["dev.py", "test"],
+      "options": { "cwd": "${workspaceFolder}" },
+      "group": { "kind": "test", "isDefault": true },
+      "problemMatcher": []
+    },
+    {
+      "label": "Dashcam: Setup development environment",
+      "type": "process",
+      "command": "python",
+      "linux": { "command": "python3" },
+      "args": ["dev.py", "setup"],
+      "options": { "cwd": "${workspaceFolder}" },
+      "problemMatcher": []
+    },
+    {
+      "label": "Dashcam: Emulator logs",
+      "type": "process",
+      "command": "python",
+      "linux": { "command": "python3" },
+      "args": ["dev.py", "logs"],
+      "options": { "cwd": "${workspaceFolder}" },
+      "problemMatcher": []
+    },
+    {
+      "label": "Dashcam: Stop emulator",
+      "type": "process",
+      "command": "python",
+      "linux": { "command": "python3" },
+      "args": ["dev.py", "stop"],
+      "options": { "cwd": "${workspaceFolder}" },
+      "problemMatcher": []
+    }
+  ]
+}

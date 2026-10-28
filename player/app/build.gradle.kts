@@ -1,7 +1,12 @@
 plugins { id("com.android.application") }
 
+// Native development launchers isolate outputs when Windows and Linux share a checkout.
+providers.gradleProperty("dashcamDevBuildDir").orNull?.let {
+    layout.buildDirectory.set(file(it))
+}
+
 // build.sh passes the package version: -PdashcamVersion=0.4
-val dashcamVersion = (findProperty("dashcamVersion") as String?) ?: "0.0"
+val dashcamVersion = (findProperty("dashcamVersion") as String?) ?: "0.0.1"
 val versionParts = dashcamVersion.split(".").map { it.toInt() } + listOf(0, 0, 0)
 
 android {
