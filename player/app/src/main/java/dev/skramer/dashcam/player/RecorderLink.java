@@ -10,19 +10,19 @@ import java.nio.charset.StandardCharsets;
 
 /**
  * The recorder service (the dashcam NEMESIS package). What it's doing comes from its status
- * file. What it should do goes in two files in this app's own files directory, which only this
- * app can write and the recorder reads: recorder.conf (settings) and viewing (a lease that keeps
- * recording paused while the player is open).
+ * file. What it should do goes in files in this app's own files directory, which only this app
+ * can write and the recorder reads: recorder.conf (settings) and debug (the camera debug
+ * screen's request).
  */
 final class RecorderLink {
     private static final File STATE = new File("/data/nemesis/dashcam");
     static final String CONF = "recorder.conf";
-    static final String LEASE = "viewing";
-    static final long LEASE_RENEW_MS = 2000;
+    /** The camera debug screen's request; see CameraDebugActivity. */
+    static final String DEBUG = "debug";
     /** The heartbeat is rewritten every second while the recorder runs. */
     private static final long HEARTBEAT_STALE_MS = 10_000;
 
-    /** recording, paused (player open), reverse, caroff, off, nodrive, starting; or null if there's no status. */
+    /** recording, reversing, debug, reverse, caroff, off, nodrive, starting; or null if there's no status. */
     String state;
     long since;
     boolean running;
@@ -127,26 +127,6 @@ final class RecorderLink {
             readableByRecorder(dir, tmp);
             if (!tmp.renameTo(new File(dir, CONF))) throw new IOException("can't replace " + CONF);
         }
-    }
-
-    /** Renews the lease that keeps recording paused: while the camera runs, playback shows corrupt frames. */
-    static void renewViewingLease(Context c) {
-        File dir = c.getFilesDir();
-        File f = new File(dir, LEASE);
-        try {
-            if (!f.exists()) {
-                new FileOutputStream(f).close();
-                readableByRecorder(dir, f);
-            } else {
-                f.setLastModified(System.currentTimeMillis());
-            }
-        } catch (IOException e) {
-            // The recorder keeps recording; playback may flash.
-        }
-    }
-
-    static void endViewingLease(Context c) {
-        new File(c.getFilesDir(), LEASE).delete();
     }
 
     /** The recorder runs as the system uid: it needs to pass through the files directory and read the file. */

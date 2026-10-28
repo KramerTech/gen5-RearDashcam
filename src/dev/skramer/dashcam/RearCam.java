@@ -1,6 +1,7 @@
 package dev.skramer.dashcam;
 
 import android.os.Looper;
+import android.os.SystemClock;
 import java.lang.ref.WeakReference;
 import java.lang.reflect.Constructor;
 import java.lang.reflect.Field;
@@ -48,8 +49,15 @@ final class RearCam {
         Constructor<?> handler = Class.forName(CLASS + "$EventHandler_").getDeclaredConstructor(t, t, Looper.class);
         handler.setAccessible(true);
         set(t, c, "mEventHandler", handler.newInstance(c, c, Looper.myLooper()));
-        call(t, c, "native_setup", new Class<?>[] {Object.class, int.class, String.class},
-                new WeakReference<>(c), id, "android");
+        long t0 = SystemClock.uptimeMillis();
+        try {
+            call(t, c, "native_setup", new Class<?>[] {Object.class, int.class, String.class},
+                    new WeakReference<>(c), id, "android");
+        } catch (Exception e) {
+            Log.i("camera " + id + ": native_setup failed after " + (SystemClock.uptimeMillis() - t0) + " ms: " + e);
+            throw e;
+        }
+        Log.i("camera " + id + ": native_setup " + (SystemClock.uptimeMillis() - t0) + " ms");
         set(t, c, "initialized", true);
         RearCam cam = new RearCam(t, c);
         try {
@@ -75,6 +83,65 @@ final class RearCam {
         return cam;
     }
 
+    /**
+     * The camera RearCamera.open() would pick, as the stock reverse view opens it: the first
+     * facing back. Only the direct-display cameras (0 and 3) can run without a preview surface;
+     * anything else, or no answer, gives 0.
+     */
+    static int stockId() {
+        int id = backFacing();
+        if (id == 0 || id == 3) return id;
+        if (id > 0) Log.w("the back camera is " + id + ", which has no direct display; using 0");
+        return 0;
+    }
+
+    /** The first camera facing back, or -1. */
+    private static int backFacing() {
+        try {
+            for (int id = 0, n = cameras(); id < n; id++) {
+                Object info = info(id);
+                if (info != null && info.getClass().getField("facing").getInt(info) == 0) return id;
+            }
+        } catch (Throwable t) {
+            Log.w("can't list the cameras: " + t);
+        }
+        return -1;
+    }
+
+    private static int cameras() throws Exception {
+        return (Integer) call(Class.forName(CLASS), null, "getNumberOfCameras", new Class<?>[0]);
+    }
+
+    /** RearCamera.getCameraInfo(id), or null if it fails. */
+    private static Object info(int id) throws Exception {
+        Class<?> t = Class.forName(CLASS + "$RearCameraInfo");
+        Object info = t.newInstance();
+        int r = (Integer) call(Class.forName(CLASS), null, "getCameraInfo", new Class<?>[] {int.class, t}, id, info);
+        return r == 0 ? info : null;
+    }
+
+    /** "id: facing F, orientation O" for each camera, for the debug report. */
+    static String describeCameras() {
+        StringBuilder b = new StringBuilder();
+        try {
+            int n = cameras();
+            b.append(n).append(" cameras");
+            for (int id = 0; id < n; id++) {
+                Object info = info(id);
+                b.append("; ").append(id).append(": ");
+                if (info == null) {
+                    b.append("no info");
+                } else {
+                    b.append("facing ").append(info.getClass().getField("facing").getInt(info))
+                            .append(", orientation ").append(info.getClass().getField("orientation").getInt(info));
+                }
+            }
+        } catch (Throwable t) {
+            b.append(" (").append(t).append(')');
+        }
+        return b.append(" (facing 0 back, 1 front, 2 aux video, 3 DVRS)").toString();
+    }
+
     /** RearCamera.getCameraType(): how this car's camera is connected (0 analog), or -1. */
     static int type() {
         try {
@@ -86,10 +153,33 @@ final class RearCam {
 
     /** Sets the parameters, without reading them first, and starts the direct-display path. */
     void start(int width, int height) throws Exception {
-        call(type, camera, "native_setParameters", new Class<?>[] {String.class},
-                String.format(java.util.Locale.US, PARAMETERS, width, height));
+        String p = String.format(java.util.Locale.US, PARAMETERS, width, height);
+        timed("native_setParameters(" + p + ")", "native_setParameters", new Class<?>[] {String.class}, p);
         previewing = true;
-        call(type, camera, "startPreview", new Class<?>[0]);
+        timed("startPreview", "startPreview", new Class<?>[0]);
+    }
+
+    /** Calls a method of the camera, logging how long it took and what it returned or threw. */
+    private Object timed(String what, String name, Class<?>[] types, Object... args) throws Exception {
+        long t0 = SystemClock.uptimeMillis();
+        try {
+            Object r = call(type, camera, name, types, args);
+            Log.i("camera: " + what + " " + (SystemClock.uptimeMillis() - t0) + " ms" + (r != null ? ", returned " + r : ""));
+            return r;
+        } catch (Exception e) {
+            Log.i("camera: " + what + " failed after " + (SystemClock.uptimeMillis() - t0) + " ms: " + e);
+            throw e;
+        }
+    }
+
+    /** The parameters as the HAL has them, for the debug report. */
+    String parameters() throws Exception {
+        return (String) call(type, camera, "native_getParameters", new Class<?>[0]);
+    }
+
+    /** RearCamera.checkVideoSignal(), which the stock view calls once a second. */
+    int signal() throws Exception {
+        return (Integer) call(type, camera, "checkVideoSignal", new Class<?>[0]);
     }
 
     /** Stops the camera and lets go of it, for the reverse view. */
@@ -97,15 +187,15 @@ final class RearCam {
         if (previewing) {
             previewing = false;
             try {
-                call(type, camera, "stopPreview", new Class<?>[0]);
+                timed("stopPreview", "stopPreview", new Class<?>[0]);
             } catch (Throwable t) {
-                Log.e("camera stopPreview failed", t);  // released below either way
+                // logged; released below either way
             }
         }
         try {
-            call(type, camera, "release", new Class<?>[0]);
+            timed("release", "release", new Class<?>[0]);
         } catch (Throwable t) {
-            Log.e("camera release failed", t);
+            // logged
         }
     }
 

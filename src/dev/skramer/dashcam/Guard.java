@@ -24,7 +24,8 @@ import java.util.concurrent.TimeUnit;
  * input, and while the dashcam holds it the stock view can't open at all. So the camera is
  * released whenever the stock app wants it (it broadcasts CAMERA_APP_START, for reverse and for
  * the camera button) or the gear reads R, and only taken back once the gear is out of R and the
- * stock app has closed its camera. If a release hangs, the process kills itself, which frees the
+ * stock app has closed its camera. Meanwhile recording goes on from the stock view's frames
+ * (Recorder.handOff, state "reversing"). If a release hangs, the process kills itself, which frees the
  * camera too; the service script restarts it. The heartbeat file lets the watchdog service kill
  * a process that stopped responding altogether.
  *
@@ -33,10 +34,12 @@ import java.util.concurrent.TimeUnit;
  * for the camera button too) that does the work.
  *
  * The player app's settings file turns recording off and on; changing recording settings in it
- * restarts the recorder (the service script starts it again). While the player is open it keeps
- * a lease file fresh, and recording pauses: with the camera running, video playback on this unit
- * shows flashes of corrupt frames. For the same reason it pauses while another video app
- * (Config.pauseFor) is in front. The status file says what the recorder is doing.
+ * restarts the recorder (the service script starts it again). The status file says what the
+ * recorder is doing.
+ *
+ * While the app's camera debug screen is open (see {@link CameraDebug}) the camera runs a debug
+ * session the screen asks for instead, whether or not recording is on, with the same hand-off
+ * to the stock view.
  *
  * It only records while the ignition is on. The head unit also starts up while the car is off
  * (every half hour or so overnight, for the car's own checks), and then the camera has no power
@@ -52,28 +55,30 @@ final class Guard extends Thread {
     private static final long RETRY_MS = 5000;
     /** The ignition reading off this many polls in a row (about a second) means the car is off. */
     private static final int IGNITION_OFF_POLLS = 4;
-    /** The player renews its lease every 2 s; a lease older than this has lapsed (app gone). */
-    private static final long LEASE_MS = 6000;
 
     private final Config config;
     private final Recorder recorder;
     private final Storage storage;
     private final Handler main = new Handler(Looper.getMainLooper());
-    private final File heartbeat, status, appConf, viewingLease;
+    private final File heartbeat, status, appConf;
     private final Method gearStatus;
     private final StockCameraWatcher watcher = new StockCameraWatcher();
+    private final CameraDebug cameraDebug;
     private final Runnable startRecorder = new Runnable() {
         @Override
         public void run() {
             recorder.start();
         }
     };
+    private final Runnable takeBack = new Runnable() {
+        @Override
+        public void run() {
+            recorder.takeBack();
+        }
+    };
     private volatile long lastBlockMs = -SETTLE_MS;
     private boolean disabled;
     private long appConfModified;
-    /** The video app in front (Config.pauseFor), or null. */
-    private String videoAppInFront;
-    private Method getTasks;
     private int lastGear = -1;
     private int ignitionOffPolls;
     private Boolean lastIgnition;
@@ -87,9 +92,9 @@ final class Guard extends Thread {
         heartbeat = new File(config.stateDir, "heartbeat");
         status = new File(config.stateDir, "status");
         appConf = new File(config.appConf);
-        viewingLease = new File(config.viewingLease);
         appConfModified = appConf.lastModified();
         disabled = !config.enabled;
+        cameraDebug = new CameraDebug(config);
         gearStatus = gearMethod();
         setDaemon(true);
     }
@@ -104,7 +109,7 @@ final class Guard extends Thread {
             Log.e("can't listen for the stock camera; the camera button won't work while recording", t);
         }
         if (disabled) Log.i("recording is turned off in the app");
-        boolean wasViewing = false;
+        boolean wasDebugging = false;
         long nextStart = 0;
         boolean mounted = true;
         for (long beat = 0; ; beat++) {
@@ -119,37 +124,58 @@ final class Guard extends Thread {
                 boolean carOff = carOff();
                 boolean blocked = now - lastBlockMs < SETTLE_MS;
                 if (beat % 4 == 0) checkAppSettings();
-                if (beat % 4 == 0) videoAppInFront = videoAppInFront();
-                boolean viewing = viewing() || videoAppInFront != null;
-                if (viewing != wasViewing) {
-                    Log.i(viewing ? (videoAppInFront != null ? videoAppInFront : "the player") + " is open; pausing"
-                            : "video app closed");
-                    wasViewing = viewing;
+                final CameraDebug.Request debug = cameraDebug.read();
+                if ((debug != null) != wasDebugging) {
+                    Log.i(debug != null ? "camera debug screen open" : "camera debug screen closed");
+                    wasDebugging = debug != null;
+                    if (debug == null) cameraDebug.end();
                 }
+                // The debug screen overrides recording being off.
+                boolean off = disabled && debug == null;
                 String state;
                 if (recorder.isActive()) {
-                    if (blocked) release(gear == GEAR_REVERSE ? "reverse" : "stock camera");
-                    else if (carOff) release("ignition off");
-                    else if (disabled) release("turned off");
-                    else if (viewing) release("player open");
-                    state = recorder.isActive() ? "recording" : carOff ? "caroff" : disabled ? "off"
-                            : viewing ? "paused" : "reverse";
+                    if (blocked) {
+                        if (!recorder.isPassive()) handOff(gear == GEAR_REVERSE ? "reverse" : "stock camera");
+                    } else if (carOff) {
+                        release("ignition off");
+                    } else if (debug != null ? !recorder.isDebug() || !debug.matches(recorder) : recorder.isDebug()) {
+                        release(debug != null ? "camera debug" : "camera debug closed");
+                        nextStart = 0;
+                    } else if (off) {
+                        release("turned off");
+                    } else if (recorder.isPassive() && now >= nextStart) {
+                        nextStart = now + RETRY_MS;
+                        if (stockCameraOpen()) {
+                            Log.i("the stock view still has the camera; waiting");
+                            lastBlockMs = now;  // check again after SETTLE_MS
+                        } else {
+                            main.post(takeBack);
+                        }
+                    }
+                    state = !recorder.isActive() ? (carOff ? "caroff" : off ? "off" : blocked ? "reverse" : "starting")
+                            : recorder.isDebug() ? "debug" : recorder.isPassive() ? "reversing" : "recording";
                 } else if (carOff) {
                     state = "caroff";
-                } else if (disabled) {
+                } else if (off) {
                     state = "off";
-                } else if (viewing) {
-                    state = "paused";
                 } else if (blocked) {
                     state = "reverse";
                 } else {
                     if (now >= nextStart) {
                         nextStart = now + RETRY_MS;
-                        mounted = storage.mounted();
+                        mounted = debug != null || storage.mounted();
                         if (!mounted) {
                             if (beat % 120 == 0) Log.i("waiting for " + config.mount);
                         } else if (stockCameraOpen()) {
+                            Log.i("the stock view still has the camera; waiting");
                             lastBlockMs = now;  // the stock view is still up; check again after SETTLE_MS
+                        } else if (debug != null) {
+                            main.post(new Runnable() {
+                                @Override
+                                public void run() {
+                                    recorder.startDebug(CameraDebug.camera(debug), debug.width, debug.height);
+                                }
+                            });
                         } else {
                             main.post(startRecorder);
                         }
@@ -157,6 +183,7 @@ final class Guard extends Thread {
                     state = mounted ? "starting" : "nodrive";
                 }
                 writeStatus(state);
+                if (debug != null) cameraDebug.update(debug, state, gear, recorder);
                 if (beat % 4 == 0) writeHeartbeat(beat / 4);
                 SystemClock.sleep(POLL_MS);
             } catch (Throwable t) {
@@ -186,8 +213,35 @@ final class Guard extends Thread {
 
     /** The stock app is about to open the rear camera: let go of it now. */
     void onStockCamera() {
+        Log.i("the stock camera app is starting");
         lastBlockMs = SystemClock.uptimeMillis();
-        if (recorder.isActive()) release("stock camera");
+        if (recorder.isActive() && !recorder.isPassive()) handOff("stock camera");
+    }
+
+    /**
+     * Lets go of the camera for the stock view, as release does, but goes on recording the stock
+     * view's frames (Recorder.handOff); a debug session just stops.
+     */
+    private synchronized void handOff(String why) {
+        if (!recorder.isActive() || recorder.isPassive()) return;
+        if (recorder.isDebug()) {
+            release(why);
+            return;
+        }
+        Log.i("handing the camera over: " + why);
+        final CountDownLatch released = new CountDownLatch(1);
+        main.postAtFrontOfQueue(new Runnable() {
+            @Override
+            public void run() {
+                recorder.handOff(new Runnable() {
+                    @Override
+                    public void run() {
+                        released.countDown();
+                    }
+                });
+            }
+        });
+        awaitRelease(released);
     }
 
     /** Stops the recorder on the camera thread; if that doesn't finish in time, dies instead. */
@@ -202,6 +256,11 @@ final class Guard extends Thread {
                 done.countDown();
             }
         });
+        awaitRelease(done);
+    }
+
+    /** Waits for the camera to be released; if it isn't in time, dies, which frees it. */
+    private static void awaitRelease(CountDownLatch done) {
         boolean ok;
         try {
             ok = done.await(RELEASE_TIMEOUT_MS, TimeUnit.MILLISECONDS);
@@ -287,37 +346,9 @@ final class Guard extends Thread {
         if (!tmp.renameTo(copy)) Log.w("can't replace " + copy);
     }
 
-    /** The package of the front task if it's a video app, else null. */
-    private String videoAppInFront() {
-        if (config.pauseFor.length == 0) return null;
-        try {
-            Object am = ActivityManagerNative.getDefault();
-            if (getTasks == null) {
-                for (Method m : am.getClass().getMethods()) {
-                    if (m.getName().equals("getTasks") && m.getParameterTypes().length == 3) getTasks = m;
-                }
-                if (getTasks == null) throw new NoSuchMethodException("IActivityManager.getTasks");
-            }
-            java.util.List<?> tasks = (java.util.List<?>) getTasks.invoke(am, 1, 0, null);
-            if (tasks == null || tasks.isEmpty()) return null;
-            android.content.ComponentName top = ((android.app.ActivityManager.RunningTaskInfo) tasks.get(0)).topActivity;
-            if (top == null) return null;
-            for (String p : config.pauseFor) if (p.equals(top.getPackageName())) return p;
-        } catch (Throwable t) {
-            Log.e("can't see the front app; not pausing for video apps", t);
-            config.pauseFor = new String[0];  // don't retry every second
-        }
-        return null;
-    }
-
-    /** True while the player app holds a fresh lease. */
-    private boolean viewing() {
-        long m = viewingLease.lastModified();
-        return m != 0 && Math.abs(System.currentTimeMillis() - m) < LEASE_MS;
-    }
-
     /**
-     * What the player app shows: "recording", "reverse" (the camera is with the reverse view),
+     * What the player app shows: "recording", "reversing" (recording the reverse view's frames),
+     * "debug" (a camera debug session), "reverse" (the camera is with the reverse view),
      * "caroff" (ignition off), "off", "nodrive" or "starting", and since when. Written only when
      * it changes, readable by any app. The heartbeat's age says whether the recorder is running.
      */

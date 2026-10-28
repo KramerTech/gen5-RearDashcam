@@ -61,6 +61,15 @@ public final class SettingsActivity extends Activity {
         LinearLayout.LayoutParams tl = new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1);
         tl.leftMargin = px(16);
         bar.addView(title, tl);
+        Button debug = new Button(this);
+        debug.setText("Camera debug");
+        debug.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                startActivity(new android.content.Intent(SettingsActivity.this, CameraDebugActivity.class));
+            }
+        });
+        bar.addView(debug, new LinearLayout.LayoutParams(LinearLayout.LayoutParams.WRAP_CONTENT, px(56)));
         root.addView(bar, new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, px(72)));
 
         ScrollView scroll = new ScrollView(this);

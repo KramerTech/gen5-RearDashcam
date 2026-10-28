@@ -10,43 +10,44 @@ import libcore.io.OsConstants;
 
 /**
  * The backup camera's picture in RAM. While the camera's direct-display path runs (see
- * {@link RearCam}), the kernel driver has the hardware write each frame into a ring of four
- * buffers at the start of the reserved "rearcamera" region: width × height BGRA pixels each, one
- * after the other, rows packed. The display shows them from there.
+ * {@link RearCam}), whether for us or for the stock reverse view, the kernel driver has the
+ * hardware write each frame into a ring of four buffers at the start of the reserved
+ * "rearcamera" region: width × height BGRA pixels each, one after the other, rows packed. The
+ * display shows them from there.
  * <p>
  * The region is mapped read-only through /dev/admem, whose open and mmap have no side effects
  * (unlike opening /dev/video0, which takes the camera driver's lock). Reading it never disturbs
  * the camera or the reverse view; while nothing runs the camera it just holds the last frames.
+ * It's mapped once, whole, and stays mapped: nothing can read it after it's gone.
  */
 final class CameraRam {
     static final int SLOTS = 4;
     private static final String PMAP = "/proc/pmap", REGION = "rearcamera", DEVICE = "/dev/admem";
 
-    private final long address, length, frameBytes;
+    final long length;
+    private final long address;
 
-    private CameraRam(long address, long length, long frameBytes) {
+    private CameraRam(long address, long length) {
         this.address = address;
         this.length = length;
-        this.frameBytes = frameBytes;
     }
 
-    /** Maps the ring for frames of this size; fails if the reserved region is missing or too small. */
-    static CameraRam map(int width, int height) throws Exception {
+    /** Maps the region; fails if it's missing. */
+    static CameraRam map() throws Exception {
         long[] region = region();
-        long frameBytes = (long) width * height * 4, length = frameBytes * SLOTS;
-        if (length > region[1]) {
-            throw new IOException(String.format(java.util.Locale.US, "%s is 0x%x bytes; %d %dx%d frames need 0x%x",
-                    REGION, region[1], SLOTS, width, height, length));
-        }
         FileDescriptor fd = Libcore.os.open(DEVICE, OsConstants.O_RDONLY | OsConstants.O_SYNC, 0);
         try {
-            long a = Libcore.os.mmap(0, length, OsConstants.PROT_READ, OsConstants.MAP_SHARED, fd, region[0]);
-            Log.i(String.format(java.util.Locale.US, "camera RAM: %s at 0x%x, 0x%x bytes; mapped 0x%x",
-                    REGION, region[0], region[1], length));
-            return new CameraRam(a, length, frameBytes);
+            long a = Libcore.os.mmap(0, region[1], OsConstants.PROT_READ, OsConstants.MAP_SHARED, fd, region[0]);
+            Log.i(String.format(java.util.Locale.US, "camera RAM: %s at 0x%x, 0x%x bytes", REGION, region[0], region[1]));
+            return new CameraRam(a, region[1]);
         } finally {
             Libcore.os.close(fd);
         }
+    }
+
+    /** True if a ring of four width × height frames fits. */
+    boolean fits(int width, int height) {
+        return (long) width * height * 4 * SLOTS <= length;
     }
 
     /** Physical address and size of the reserved region, from the kernel's list ("base size name" lines). */
@@ -62,17 +63,15 @@ final class CameraRam {
         throw new IOException("no " + REGION + " region in " + PMAP);
     }
 
-    /** Copies count pixels (as little-endian ints, so 0xAARRGGBB) from slot, starting at pixel offset. */
-    void read(int slot, int offset, int[] dst, int count) {
-        Memory.peekIntArray(address + slot * frameBytes + offset * 4L, dst, 0, count, false);
+    /** The mapped address of byte offset, for native code, if count bytes from there are in the region. */
+    long address(long offset, long count) {
+        if (offset < 0 || offset + count > length) throw new IndexOutOfBoundsException("past the end of " + REGION);
+        return address + offset;
     }
 
-    /** Only once no thread can read any more: reading unmapped memory crashes the process. */
-    void unmap() {
-        try {
-            Libcore.os.munmap(address, length);
-        } catch (Exception e) {
-            Log.w("can't unmap the camera RAM: " + e);
-        }
+    /** Copies count pixels (as little-endian ints, so 0xAARRGGBB) from byte offset into dst at dstOffset. */
+    void read(long offset, int[] dst, int dstOffset, int count) {
+        if (offset < 0 || offset + count * 4L > length) throw new IndexOutOfBoundsException("past the end of " + REGION);
+        Memory.peekIntArray(address + offset, dst, dstOffset, count, false);
     }
 }

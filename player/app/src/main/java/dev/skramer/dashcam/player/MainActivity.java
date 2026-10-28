@@ -205,9 +205,13 @@ public final class MainActivity extends Activity {
                     color = 0xFFEF4444;
                     text = "Recording since " + Fmt.hm(rec.since);
                     break;
-                case "paused":
-                    color = 0xFF5B6470;
-                    text = "Paused while you watch";
+                case "reversing":
+                    color = 0xFFEF4444;
+                    text = "Recording the reverse camera";
+                    break;
+                case "debug":
+                    color = 0xFFF59E0B;
+                    text = "Paused for the camera debug screen";
                     break;
                 case "reverse":
                     color = 0xFFF59E0B;

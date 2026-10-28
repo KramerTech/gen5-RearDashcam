@@ -9,8 +9,9 @@
 #   DashcamPlayer.apk           the player app on its own
 #   SHA256SUMS
 #
-# Needs: Java 17+ and the Android SDK ($ANDROID_HOME, default ~/Android/Sdk) with a platform
-# and build-tools; Gradle fetches the player's dependencies.
+# Needs: Java 17+ and the Android SDK ($ANDROID_HOME, default ~/Android/Sdk) with a platform,
+# build-tools and NDK r25 (the last for Android 4.4: sdkmanager "ndk;25.2.9519653"); Gradle
+# fetches the player's dependencies.
 # Signing: $DASHCAM_KEYSTORE (default ../dashcam-signing/dashcam.jks), alias dashcam, password
 # from $DASHCAM_KEY_PASS or else pass.txt beside the keystore. Every release must use the same
 # key, or installs over an older one fail. The build stops if the signer isn't SIGNING_CERT_SHA256
@@ -35,6 +36,9 @@ die() { echo "build: $*" >&2; exit 1; }
 [ -f "$ANDROID_JAR" ] || die "no android.jar under $ANDROID_HOME/platforms"
 [ -x "$D8" ] && [ -x "$BT/apksigner" ] || die "no build-tools (d8, apksigner) under $ANDROID_HOME/build-tools"
 [ -f "$KEYSTORE" ] || die "keystore not found: $KEYSTORE"
+NDK=$(ls -d "$ANDROID_HOME"/ndk/25.* 2>/dev/null | sort -V | tail -1)
+CC=$NDK/toolchains/llvm/prebuilt/linux-x86_64/bin/armv7a-linux-androideabi19-clang
+[ -x "$CC" ] || die "no NDK r25 under $ANDROID_HOME/ndk (sdkmanager \"ndk;25.2.9519653\")"
 
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
@@ -46,6 +50,9 @@ javac -source 8 -target 8 -Xlint:-options -bootclasspath "$ANDROID_JAR" -cp "$wo
     $(find "$HERE/src" -name '*.java')
 "$D8" --min-api 19 --lib "$ANDROID_JAR" --classpath "$work/stubs" --output "$work/dashcam.jar" \
     $(find "$work/classes" -name '*.class')
+# The recorder's per-pixel work in C (native/): ARMv7 with NEON. Old Android's loader needs SysV hashes.
+"$CC" -O3 -mfpu=neon -mfloat-abi=softfp -fPIC -shared -Wall -Wextra -Werror -Wl,--hash-style=both -s \
+    -o "$work/libdashcam.so" "$HERE/native/dashcam.c"
 
 # Player app
 (cd "$HERE/player" && ANDROID_HOME=$ANDROID_HOME ./gradlew -q assembleRelease -PdashcamVersion="$VERSION")
@@ -60,6 +67,7 @@ grep -qi "certificate SHA-256 digest: $SIGNING_CERT_SHA256\$" <<< "$certs" \
 stage=$work/package
 cp -R "$HERE/package" "$stage"
 cp "$work/dashcam.jar" "$stage/dashcam.jar"
+cp "$work/libdashcam.so" "$stage/libdashcam.so"
 mkdir -p "$stage/app"
 cp "$work/DashcamPlayer.apk" "$stage/app/DashcamPlayer.apk"
 cp "$HERE/LICENSE" "$stage/LICENSE"

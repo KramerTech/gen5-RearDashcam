@@ -28,6 +28,7 @@ import androidx.media3.common.Timeline;
 import androidx.media3.datasource.FileDataSource;
 import androidx.media3.exoplayer.DefaultRenderersFactory;
 import androidx.media3.exoplayer.ExoPlayer;
+import androidx.media3.exoplayer.DefaultLoadControl;
 import androidx.media3.exoplayer.SeekParameters;
 import androidx.media3.exoplayer.source.MediaSource;
 import androidx.media3.exoplayer.source.ProgressiveMediaSource;
@@ -97,14 +98,6 @@ public final class PlayerActivity extends Activity implements Player.Listener, H
             handler.postDelayed(this, TICK_MS);
         }
     };
-    /** Keeps the recorder paused while the player is open (see RecorderLink.renewViewingLease). */
-    private final Runnable lease = new Runnable() {
-        @Override
-        public void run() {
-            RecorderLink.renewViewingLease(PlayerActivity.this);
-            handler.postDelayed(this, RecorderLink.LEASE_RENEW_MS);
-        }
-    };
     private final Runnable hideMessage = new Runnable() {
         @Override
         public void run() {
@@ -164,9 +157,14 @@ public final class PlayerActivity extends Activity implements Player.Listener, H
     @Override
     protected void onStart() {
         super.onStart();
-        handler.post(lease);
+        // MPEG-TS has no index: a seek from the file lands near the target and decodes from the
+        // next keyframe, which can be past it, so frame steps went astray. A seek within what's
+        // in memory goes back to the keyframe before the target instead; keeping 30 s behind the
+        // playhead (from a keyframe) makes frame steps exact.
         player = new ExoPlayer.Builder(this, new DefaultRenderersFactory(this)
-                .setEnableDecoderFallback(true)).build();
+                .setEnableDecoderFallback(true))
+                .setLoadControl(new DefaultLoadControl.Builder().setBackBuffer(30_000, true).build())
+                .build();
         player.setVideoTextureView(video);
         player.addListener(this);
         player.setPlaybackSpeed(SPEEDS[speedIndex]);
@@ -196,8 +194,6 @@ public final class PlayerActivity extends Activity implements Player.Listener, H
     protected void onStop() {
         super.onStop();
         handler.removeCallbacks(tick);
-        handler.removeCallbacks(lease);
-        RecorderLink.endViewingLease(this);
         if (player != null) {
             if (!playlist.isEmpty()) {
                 resumeWall = wallNow();

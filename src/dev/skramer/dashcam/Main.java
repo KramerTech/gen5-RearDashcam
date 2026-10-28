@@ -35,6 +35,7 @@ public final class Main {
         Looper.prepareMainLooper();
         Log.i("starting: " + config);
         Log.i("car: " + Car.describe());
+        new GuideLines(config).restore();  // a previous recorder may have died with them off
         recorder[0] = new Recorder(config, new Handler());
         new Guard(config, recorder[0]).start();
         if (saveButton != null) saveButton.start();

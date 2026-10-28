@@ -4,10 +4,17 @@ import java.text.SimpleDateFormat;
 import java.util.Date;
 import java.util.Locale;
 
-/** Logs to logcat (tag "Dashcam") and to stdout, which the service script appends to its log file. */
+/**
+ * Logs to logcat (tag "Dashcam") and to stdout, which the service script appends to its log file.
+ * The last lines are also kept, numbered and timed to the millisecond, for the app's camera debug
+ * screen.
+ */
 final class Log {
     private static final String TAG = "Dashcam";
     private static final SimpleDateFormat TIME = new SimpleDateFormat("MM-dd HH:mm:ss", Locale.US);
+    private static final SimpleDateFormat TIME_MS = new SimpleDateFormat("HH:mm:ss.SSS", Locale.US);
+    private static final String[] recent = new String[200];
+    private static long count;
 
     private Log() {}
 
@@ -27,6 +34,18 @@ final class Log {
     }
 
     private static synchronized void print(String level, String msg) {
-        System.out.println(TIME.format(new Date()) + " " + level + " " + msg);
+        Date now = new Date();
+        System.out.println(TIME.format(now) + " " + level + " " + msg);
+        recent[(int) (count++ % recent.length)] = TIME_MS.format(now) + " " + level + " " + msg.replace('\n', ' ');
+    }
+
+    /** The kept lines numbered above after, oldest first, as "log.N=line" lines. */
+    static synchronized String since(long after) {
+        if (after >= count) after = -1;  // the asker saw a recorder from before a restart
+        StringBuilder b = new StringBuilder();
+        for (long n = Math.max(after + 1, count - recent.length); n < count; n++) {
+            b.append("log.").append(n).append('=').append(recent[(int) (n % recent.length)]).append('\n');
+        }
+        return b.toString();
     }
 }
