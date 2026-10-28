@@ -33,6 +33,7 @@ final class Recorder implements Camera.PreviewCallback, Camera.ErrorCallback {
     private final SegmentWriter writer;
     private final GuideLines guideLines;
     private final int width, height, ySize, cSize, frameLength;
+    private final byte[][] callbackBuffers = new byte[CALLBACK_BUFFERS][];
     private final byte[] i420;
     private final int ticksPerFrame;
 
@@ -57,6 +58,7 @@ final class Recorder implements Camera.PreviewCallback, Camera.ErrorCallback {
         ySize = width * height;
         cSize = ySize / 4;
         frameLength = ySize * 2;
+        for (int i = 0; i < CALLBACK_BUFFERS; i++) callbackBuffers[i] = new byte[frameLength];
         i420 = new byte[ySize + 2 * cSize];
         ticksPerFrame = Math.max(1, Math.round(60_000f / 1001 / config.fps));
         writer = new SegmentWriter(config, new Storage(config), new SegmentWriter.Failure() {
@@ -115,7 +117,7 @@ final class Recorder implements Camera.PreviewCallback, Camera.ErrorCallback {
             texture = new SurfaceTexture(10);
             camera.setPreviewTexture(texture);
             camera.setPreviewCallbackWithBuffer(this);
-            for (int i = 0; i < CALLBACK_BUFFERS; i++) camera.addCallbackBuffer(new byte[frameLength]);
+            for (byte[] b : callbackBuffers) camera.addCallbackBuffer(b);
             camera.startPreview();
             startNs = System.nanoTime();
             skipUntilNs = hidLines ? startNs + GUIDE_LINES_SETTLE_NS : startNs;
@@ -243,42 +245,110 @@ final class Recorder implements Camera.PreviewCallback, Camera.ErrorCallback {
             return;
         }
         long t0 = System.nanoTime();
-        byte[] out = i420;
-        int w = width, half = width / 2;
+        ByteBuffer in = inputs[i];
+        in.clear();
+        boolean directArray = in.hasArray() && in.arrayOffset() == 0 && in.capacity() >= i420.length;
+        byte[] out = directArray ? in.array() : i420;
         int u = ySize, v = ySize + cSize;
         if (config.swapUv) {
             u = ySize + cSize;
             v = ySize;
         }
-        boolean mirror = config.mirror;
-        int step = mirror ? -1 : 1;
+        if (config.mirror) {
+            convertMirrored(yuyv, out, u, v);
+        } else {
+            convertNormal(yuyv, out, u, v);
+        }
+        if (directArray) {
+            in.limit(i420.length);
+        } else {
+            in.put(out);
+        }
+        convertNs += System.nanoTime() - t0;
+        encoder.queueInputBuffer(i, 0, i420.length, ptsUs, 0);
+        encoded++;
+    }
+
+    private void convertMirrored(byte[] yuyv, byte[] out, int u, int v) {
+        int w = width, half = w >> 1, rowBytes = w << 1;
         for (int row = 0, s = 0; row < height; row++) {
-            int end = s + w * 2;
-            int y = mirror ? row * w + w - 1 : row * w;
+            int end = s + rowBytes, end8 = end - 4;
+            int y = row * w + w - 1;
             if ((row & 1) == 0) {
-                for (int c = (row >> 1) * half + (mirror ? half - 1 : 0); s < end; s += 4, c += step) {
+                int c = (row >> 1) * half + half - 1;
+                int uIdx = u + c, vIdx = v + c;
+                for (; s < end8; s += 8, y -= 4, uIdx -= 2, vIdx -= 2) {
                     out[y] = yuyv[s];
-                    y += step;
-                    out[y] = yuyv[s + 2];
-                    y += step;
-                    out[u + c] = yuyv[s + 1];
-                    out[v + c] = yuyv[s + 3];
+                    out[y - 1] = yuyv[s + 2];
+                    out[y - 2] = yuyv[s + 4];
+                    out[y - 3] = yuyv[s + 6];
+                    out[uIdx] = yuyv[s + 1];
+                    out[uIdx - 1] = yuyv[s + 5];
+                    out[vIdx] = yuyv[s + 3];
+                    out[vIdx - 1] = yuyv[s + 7];
+                }
+                if (s < end) {
+                    out[y] = yuyv[s];
+                    out[y - 1] = yuyv[s + 2];
+                    out[uIdx] = yuyv[s + 1];
+                    out[vIdx] = yuyv[s + 3];
+                    s += 4;
                 }
             } else {
-                for (; s < end; s += 4) {
+                for (; s < end8; s += 8, y -= 4) {
                     out[y] = yuyv[s];
-                    y += step;
-                    out[y] = yuyv[s + 2];
-                    y += step;
+                    out[y - 1] = yuyv[s + 2];
+                    out[y - 2] = yuyv[s + 4];
+                    out[y - 3] = yuyv[s + 6];
+                }
+                if (s < end) {
+                    out[y] = yuyv[s];
+                    out[y - 1] = yuyv[s + 2];
+                    s += 4;
                 }
             }
         }
-        ByteBuffer in = inputs[i];
-        in.clear();
-        in.put(out);
-        convertNs += System.nanoTime() - t0;
-        encoder.queueInputBuffer(i, 0, out.length, ptsUs, 0);
-        encoded++;
+    }
+
+    private void convertNormal(byte[] yuyv, byte[] out, int u, int v) {
+        int w = width, half = w >> 1, rowBytes = w << 1;
+        for (int row = 0, s = 0; row < height; row++) {
+            int end = s + rowBytes, end8 = end - 4;
+            int y = row * w;
+            if ((row & 1) == 0) {
+                int c = (row >> 1) * half;
+                int uIdx = u + c, vIdx = v + c;
+                for (; s < end8; s += 8, y += 4, uIdx += 2, vIdx += 2) {
+                    out[y] = yuyv[s];
+                    out[y + 1] = yuyv[s + 2];
+                    out[y + 2] = yuyv[s + 4];
+                    out[y + 3] = yuyv[s + 6];
+                    out[uIdx] = yuyv[s + 1];
+                    out[uIdx + 1] = yuyv[s + 5];
+                    out[vIdx] = yuyv[s + 3];
+                    out[vIdx + 1] = yuyv[s + 7];
+                }
+                if (s < end) {
+                    out[y] = yuyv[s];
+                    out[y + 1] = yuyv[s + 2];
+                    out[uIdx] = yuyv[s + 1];
+                    out[vIdx] = yuyv[s + 3];
+                    s += 4;
+                }
+            } else {
+                for (; s < end8; s += 8, y += 4) {
+                    out[y] = yuyv[s];
+                    out[y + 1] = yuyv[s + 2];
+                    out[y + 2] = yuyv[s + 4];
+                    out[y + 3] = yuyv[s + 6];
+                }
+                if (s < end) {
+                    out[y] = yuyv[s];
+                    out[y + 1] = yuyv[s + 2];
+                    s += 4;
+                }
+            }
+        }
     }
 
     /** Debugging: the encoder alone, fed blank frames at the configured rate. */
@@ -340,14 +410,17 @@ final class Recorder implements Camera.PreviewCallback, Camera.ErrorCallback {
                 ByteBuffer b = outputs[o];
                 b.position(info.offset);
                 b.limit(info.offset + info.size);
-                byte[] data = new byte[info.size];
-                b.get(data);
-                encoder.releaseOutputBuffer(o, false);
                 if ((info.flags & MediaCodec.BUFFER_FLAG_CODEC_CONFIG) != 0) {
+                    byte[] data = new byte[info.size];
+                    b.get(data);
+                    encoder.releaseOutputBuffer(o, false);
                     codecConfig = data;
-                } else if (data.length > 0) {
-                    writer.frame(data, info.presentationTimeUs,
+                } else if (info.size > 0) {
+                    writer.frame(b, info.size, info.presentationTimeUs,
                             (info.flags & MediaCodec.BUFFER_FLAG_SYNC_FRAME) != 0, codecConfig);
+                    encoder.releaseOutputBuffer(o, false);
+                } else {
+                    encoder.releaseOutputBuffer(o, false);
                 }
             }
         }

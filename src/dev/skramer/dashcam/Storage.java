@@ -13,6 +13,13 @@ import java.util.Locale;
 
 /** The recording folder on the USB drive: mount check, segment names, deleting old segments. */
 final class Storage {
+    private static final FilenameFilter TS_FILES = new FilenameFilter() {
+        @Override
+        public boolean accept(File d, String name) {
+            return name.endsWith(".ts");
+        }
+    };
+
     private final Config config;
     private final File dir;
     private final SimpleDateFormat names = new SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US);
@@ -53,25 +60,22 @@ final class Storage {
         ensureDir();
         StatFs fs = new StatFs(dir.getPath());
         long want = fs.getTotalBytes() / 100 * config.minFreePercent;
-        while (fs.getAvailableBytes() < want) {
-            File[] segments = dir.listFiles(new FilenameFilter() {
-                @Override
-                public boolean accept(File d, String name) {
-                    return name.endsWith(".ts");
-                }
-            });
-            if (segments == null || segments.length == 0) {
-                Log.w("drive is full and there are no segments left to delete");
-                return;
-            }
-            Arrays.sort(segments);
-            File oldest = segments[0];
+        if (fs.getAvailableBytes() >= want) return;
+        File[] segments = dir.listFiles(TS_FILES);
+        if (segments == null || segments.length == 0) {
+            Log.w("drive is full and there are no segments left to delete");
+            return;
+        }
+        Arrays.sort(segments);
+        for (File oldest : segments) {
             if (oldest.delete()) Log.i("deleted " + oldest.getName() + " to make room");
             else {
                 Log.w("can't delete " + oldest);
                 return;
             }
             fs.restat(dir.getPath());
+            if (fs.getAvailableBytes() >= want) return;
         }
+        Log.w("drive is full and there are no segments left to delete");
     }
 }

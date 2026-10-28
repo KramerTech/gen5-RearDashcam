@@ -3,6 +3,7 @@ package dev.skramer.dashcam;
 import android.os.SystemClock;
 import java.io.File;
 import java.io.IOException;
+import java.nio.ByteBuffer;
 import java.util.concurrent.ArrayBlockingQueue;
 import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.TimeUnit;
@@ -22,25 +23,20 @@ final class SegmentWriter extends Thread {
     }
 
     private static final class Frame {
-        final byte[] data, config;
-        final long ptsUs;
-        final boolean key;
-
-        Frame(byte[] data, long ptsUs, boolean key, byte[] config) {
-            this.data = data;
-            this.ptsUs = ptsUs;
-            this.key = key;
-            this.config = config;
-        }
+        byte[] data, config;
+        int size;
+        long ptsUs;
+        boolean key;
     }
 
     /** Closes the current segment. */
-    private static final Frame END = new Frame(null, 0, false, null);
+    private static final Frame END = new Frame();
 
     private final Config config;
     private final Storage storage;
     private final Failure failure;
     private final BlockingQueue<Frame> queue = new ArrayBlockingQueue<>(300);  // about 10 s at 30 fps
+    private final BlockingQueue<Frame> free = new ArrayBlockingQueue<>(32);
     private TsWriter segment;
     private String segmentName;
     private long segmentStartUs, lastSync;
@@ -56,11 +52,27 @@ final class SegmentWriter extends Thread {
         setDaemon(true);
     }
 
+    /** Queues a frame from an encoder output buffer; drops it if the writer is more than about 10 s behind. */
+    void frame(ByteBuffer src, int size, long ptsUs, boolean key, byte[] config) {
+        Frame f = free.poll();
+        if (f == null) f = new Frame();
+        if (f.data == null || f.data.length < size) {
+            f.data = new byte[Math.max(size, 16 * 1024)];
+        }
+        src.get(f.data, 0, size);
+        f.size = size;
+        f.ptsUs = ptsUs;
+        f.key = key;
+        f.config = config;
+        if (!queue.offer(f)) {
+            free.offer(f);
+            if (dropped++ % 30 == 0) Log.w("writer is behind; dropped " + dropped + " frames so far");
+        }
+    }
+
     /** Queues a frame; drops it if the writer is more than about 10 s behind. */
     void frame(byte[] data, long ptsUs, boolean key, byte[] config) {
-        if (!queue.offer(new Frame(data, ptsUs, key, config)) && dropped++ % 30 == 0) {
-            Log.w("writer is behind; dropped " + dropped + " frames so far");
-        }
+        frame(ByteBuffer.wrap(data), data.length, ptsUs, key, config);
     }
 
     /** Saves the last Config.saveSeconds: at the next keyframe, or right away if nothing is recording. */
@@ -93,18 +105,23 @@ final class SegmentWriter extends Thread {
                     if (saveRequestedMs != 0) save();
                     continue;
                 }
-                boolean cut = f.ptsUs - segmentStartUs >= config.segmentSeconds * 1_000_000L || saveRequestedMs != 0;
-                if (segment == null || (f.key && cut)) {
-                    if (!f.key) continue;  // a segment has to start on a keyframe
-                    closeSegment();
-                    if (saveRequestedMs != 0) save();
-                    openSegment(f.ptsUs);
-                }
-                segment.writeFrame(f.data, f.ptsUs - segmentStartUs, f.key, f.config);
-                long now = SystemClock.uptimeMillis();
-                if (now - lastSync >= 1000) {
-                    segment.sync();
-                    lastSync = now;
+                try {
+                    boolean cut = f.ptsUs - segmentStartUs >= config.segmentSeconds * 1_000_000L || saveRequestedMs != 0;
+                    if (segment == null || (f.key && cut)) {
+                        if (!f.key) continue;  // a segment has to start on a keyframe
+                        closeSegment();
+                        if (saveRequestedMs != 0) save();
+                        openSegment(f.ptsUs);
+                    }
+                    segment.writeFrame(f.data, f.size, f.ptsUs - segmentStartUs, f.key, f.config);
+                    long now = SystemClock.uptimeMillis();
+                    if (now - lastSync >= 1000) {
+                        segment.sync();
+                        lastSync = now;
+                    }
+                } finally {
+                    f.config = null;
+                    free.offer(f);
                 }
             } catch (IOException | RuntimeException e) {
                 // RuntimeException too: StatFs and friends throw unchecked ones when the drive goes away.

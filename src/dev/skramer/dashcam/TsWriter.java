@@ -6,6 +6,7 @@ import java.io.Closeable;
 import java.io.File;
 import java.io.FileOutputStream;
 import java.io.IOException;
+import java.util.Arrays;
 
 /**
  * Minimal MPEG-TS muxer for one H.264 stream. TS rather than MP4 because a TS file that is
@@ -20,10 +21,27 @@ final class TsWriter implements Closeable {
     /** PTS runs this far ahead of the PCR, so players have the frame before it's due. */
     private static final long PTS_DELAY = 45_000;
 
+    private static final int[] CRC_TABLE = new int[256];
+    static {
+        for (int i = 0; i < 256; i++) {
+            int c = i << 24;
+            for (int k = 0; k < 8; k++) c = (c & 0x80000000) != 0 ? (c << 1) ^ 0x04C11DB7 : c << 1;
+            CRC_TABLE[i] = c;
+        }
+    }
+
+    private static final byte[] PAT_SECTION = section(0x00, 0x0001, new byte[] {
+        0, 1, (byte) (0xE0 | PMT_PID >> 8), (byte) PMT_PID,
+    });
+    private static final byte[] PMT_SECTION = section(0x02, 0x0001, new byte[] {
+        (byte) (0xE0 | VIDEO_PID >> 8), (byte) VIDEO_PID, (byte) 0xF0, 0,  // PCR PID, no program info
+        0x1B, (byte) (0xE0 | VIDEO_PID >> 8), (byte) VIDEO_PID, (byte) 0xF0, 0,  // H.264, no ES info
+    });
+
     private final FileOutputStream file;
     private final BufferedOutputStream out;
     private final byte[] packet = new byte[PACKET];
-    private final ByteArrayOutputStream pes = new ByteArrayOutputStream(64 * 1024);
+    private byte[] header = new byte[128];
     private int patCc, pmtCc, videoCc;
 
     TsWriter(File path) throws IOException {
@@ -37,23 +55,51 @@ final class TsWriter implements Closeable {
      * player can start at any keyframe.
      */
     void writeFrame(byte[] frame, long ptsUs, boolean key, byte[] config) throws IOException {
+        writeFrame(frame, frame.length, ptsUs, key, config);
+    }
+
+    void writeFrame(byte[] frame, int frameLen, long ptsUs, boolean key, byte[] config) throws IOException {
         if (key) {
             writePat();
             writePmt();
         }
         long pcr = ptsUs * 9 / 100;
         long pts = pcr + PTS_DELAY;
-        pes.reset();
-        pes.write(new byte[] {0, 0, 1, (byte) 0xE0, 0, 0, (byte) 0x80, (byte) 0x80, 5});
-        pes.write(new byte[] {
-            (byte) (0x21 | ((pts >> 29) & 0x0E)), (byte) (pts >> 22),
-            (byte) (((pts >> 14) & 0xFE) | 1), (byte) (pts >> 7), (byte) (((pts << 1) & 0xFE) | 1),
-        });
-        pes.write(AUD);
-        byte[] nals = annexB(frame);
-        if (key && config != null && !hasNal(nals, 7)) pes.write(annexB(config));
-        pes.write(nals);
-        packetize(VIDEO_PID, pes.toByteArray(), pcr, key);
+        header[0] = 0;
+        header[1] = 0;
+        header[2] = 1;
+        header[3] = (byte) 0xE0;
+        header[4] = 0;
+        header[5] = 0;
+        header[6] = (byte) 0x80;
+        header[7] = (byte) 0x80;
+        header[8] = 5;
+        header[9] = (byte) (0x21 | ((pts >> 29) & 0x0E));
+        header[10] = (byte) (pts >> 22);
+        header[11] = (byte) (((pts >> 14) & 0xFE) | 1);
+        header[12] = (byte) (pts >> 7);
+        header[13] = (byte) (((pts << 1) & 0xFE) | 1);
+        System.arraycopy(AUD, 0, header, 14, AUD.length);
+        int headLen = 14 + AUD.length;
+
+        byte[] nals;
+        int nalsLen;
+        if (isAnnexB(frame, frameLen)) {
+            nals = frame;
+            nalsLen = frameLen;
+        } else {
+            nals = annexB(frame, frameLen);
+            nalsLen = nals.length;
+        }
+        if (key && config != null && !hasNal(nals, nalsLen, 7)) {
+            byte[] cfg = annexB(config);
+            if (headLen + cfg.length > header.length) {
+                header = Arrays.copyOf(header, headLen + cfg.length);
+            }
+            System.arraycopy(cfg, 0, header, headLen, cfg.length);
+            headLen += cfg.length;
+        }
+        packetize(VIDEO_PID, header, headLen, nals, nalsLen, pcr, key);
     }
 
     /** Pushes buffered data to the drive, so a power cut loses at most about a second. */
@@ -72,17 +118,12 @@ final class TsWriter implements Closeable {
     }
 
     private void writePat() throws IOException {
-        byte[] s = section(0x00, 0x0001, new byte[] {0, 1, (byte) (0xE0 | PMT_PID >> 8), (byte) PMT_PID});
-        writeSection(0, s, patCc);
+        writeSection(0, PAT_SECTION, patCc);
         patCc = (patCc + 1) & 15;
     }
 
     private void writePmt() throws IOException {
-        byte[] s = section(0x02, 0x0001, new byte[] {
-            (byte) (0xE0 | VIDEO_PID >> 8), (byte) VIDEO_PID, (byte) 0xF0, 0,  // PCR PID, no program info
-            0x1B, (byte) (0xE0 | VIDEO_PID >> 8), (byte) VIDEO_PID, (byte) 0xF0, 0,  // H.264, no ES info
-        });
-        writeSection(PMT_PID, s, pmtCc);
+        writeSection(PMT_PID, PMT_SECTION, pmtCc);
         pmtCc = (pmtCc + 1) & 15;
     }
 
@@ -103,7 +144,7 @@ final class TsWriter implements Closeable {
     }
 
     private void writeSection(int pid, byte[] section, int cc) throws IOException {
-        java.util.Arrays.fill(packet, (byte) 0xFF);
+        Arrays.fill(packet, (byte) 0xFF);
         packet[0] = 0x47;
         packet[1] = (byte) (0x40 | pid >> 8);
         packet[2] = (byte) pid;
@@ -113,13 +154,15 @@ final class TsWriter implements Closeable {
         out.write(packet);
     }
 
-    /** Splits a PES packet into TS packets; the first carries the PCR (and the keyframe flag). */
-    private void packetize(int pid, byte[] data, long pcr, boolean key) throws IOException {
+    /** Splits a PES packet (head + body) into TS packets; the first carries the PCR (and the keyframe flag). */
+    private void packetize(int pid, byte[] head, int headLen, byte[] body, int bodyLen, long pcr, boolean key)
+            throws IOException {
+        int total = headLen + bodyLen;
         int pos = 0;
         boolean first = true;
-        while (pos < data.length) {
+        while (pos < total) {
             int minAf = first ? 8 : 0;  // length byte, flags, 6-byte PCR
-            int chunk = Math.min(184 - minAf, data.length - pos);
+            int chunk = Math.min(184 - minAf, total - pos);
             int af = 184 - chunk;  // adaptation field bytes, including its length byte
             packet[0] = 0x47;
             packet[1] = (byte) ((first ? 0x40 : 0) | pid >> 8);
@@ -142,22 +185,40 @@ final class TsWriter implements Closeable {
                     while (p < 4 + af) packet[p++] = (byte) 0xFF;
                 }
             }
-            System.arraycopy(data, pos, packet, p, chunk);
+            int rem = chunk;
+            if (pos < headLen) {
+                int n = Math.min(rem, headLen - pos);
+                System.arraycopy(head, pos, packet, p, n);
+                p += n;
+                pos += n;
+                rem -= n;
+            }
+            if (rem > 0) {
+                System.arraycopy(body, pos - headLen, packet, p, rem);
+                pos += rem;
+            }
             out.write(packet);
-            pos += chunk;
             first = false;
         }
     }
 
+    private static boolean isAnnexB(byte[] b, int len) {
+        return len >= 4 && b[0] == 0 && b[1] == 0 && (b[2] == 1 || (b[2] == 0 && b[3] == 1));
+    }
+
     /** Returns NAL units in Annex-B form, converting from 4-byte length prefixes if needed. */
     static byte[] annexB(byte[] b) {
-        if (b.length >= 4 && b[0] == 0 && b[1] == 0 && (b[2] == 1 || (b[2] == 0 && b[3] == 1))) return b;
-        ByteArrayOutputStream o = new ByteArrayOutputStream(b.length + 16);
+        if (isAnnexB(b, b.length)) return b;
+        return annexB(b, b.length);
+    }
+
+    private static byte[] annexB(byte[] b, int len) {
+        ByteArrayOutputStream o = new ByteArrayOutputStream(len + 16);
         int i = 0;
-        while (i + 4 <= b.length) {
+        while (i + 4 <= len) {
             int n = (b[i] & 0xFF) << 24 | (b[i + 1] & 0xFF) << 16 | (b[i + 2] & 0xFF) << 8 | (b[i + 3] & 0xFF);
             i += 4;
-            if (n <= 0 || i + n > b.length) break;
+            if (n <= 0 || i + n > len) break;
             o.write(0);
             o.write(0);
             o.write(0);
@@ -170,19 +231,18 @@ final class TsWriter implements Closeable {
 
     /** True if the Annex-B data contains a NAL unit of this type (7 = SPS). */
     static boolean hasNal(byte[] b, int type) {
-        for (int i = 0; i + 3 < b.length; i++) {
-            if (b[i] == 0 && b[i + 1] == 0 && b[i + 2] == 1 && (b[i + 3] & 0x1F) == type) return true;
-        }
-        return false;
+        return hasNal(b, b.length, type);
     }
 
-    private static final int[] CRC_TABLE = new int[256];
-    static {
-        for (int i = 0; i < 256; i++) {
-            int c = i << 24;
-            for (int k = 0; k < 8; k++) c = (c & 0x80000000) != 0 ? (c << 1) ^ 0x04C11DB7 : c << 1;
-            CRC_TABLE[i] = c;
+    static boolean hasNal(byte[] b, int len, int type) {
+        for (int i = 0; i + 3 < len; i++) {
+            if (b[i] == 0 && b[i + 1] == 0 && b[i + 2] == 1) {
+                int nal = b[i + 3] & 0x1F;
+                if (nal == type) return true;
+                if (nal == 1 || nal == 5) return false;  // parameter sets always precede coded slices
+            }
         }
+        return false;
     }
 
     /** CRC-32/MPEG-2, as PSI sections use. */

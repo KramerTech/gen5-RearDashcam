@@ -23,6 +23,8 @@ final class Car {
     private static final String SYSTEM = "com.hkmc.micom.system", SYSTEM_IFACE = "com.hkmc.micom.ISystemService";
     private static final int SYSTEM_GET_MICOM_BOOT_REASON = 0x27, SYSTEM_GET_MICOM_BOOT_MODE = 0x53;
 
+    private static volatile IBinder bcmBinder;
+
     /** IBCMService.getIGNStatus(): the ignition is on. Null if the service can't say. */
     static Boolean ignitionOn() {
         Integer v = call(BCM, BCM_IFACE, BCM_GET_IGN_STATUS, null);
@@ -51,16 +53,24 @@ final class Car {
      * the result (0 for void), or null if the service is missing or the call failed.
      */
     private static Integer call(String service, String iface, int code, Integer arg) {
-        IBinder b = ServiceManager.getService(service);
-        if (b == null) return null;
+        IBinder b = BCM.equals(service) ? bcmBinder : null;
+        if (b == null || !b.isBinderAlive()) {
+            b = ServiceManager.getService(service);
+            if (b == null) return null;
+            if (BCM.equals(service)) bcmBinder = b;
+        }
         Parcel data = Parcel.obtain(), reply = Parcel.obtain();
         try {
             data.writeInterfaceToken(iface);
             if (arg != null) data.writeInt(arg);
-            if (!b.transact(code, data, reply, 0)) return null;
+            if (!b.transact(code, data, reply, 0)) {
+                if (BCM.equals(service)) bcmBinder = null;
+                return null;
+            }
             reply.readException();
             return reply.dataAvail() >= 4 ? reply.readInt() : 0;
         } catch (Throwable t) {
+            if (BCM.equals(service)) bcmBinder = null;
             Log.w(service + " call " + code + " failed: " + t);
             return null;
         } finally {
