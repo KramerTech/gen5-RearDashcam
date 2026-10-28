@@ -326,7 +326,8 @@ final class Guard extends Thread {
         File tmp = new File(config.stateDir, "status.tmp");
         String text = "state=" + state + "\nenabled=" + !disabled + "\nsince=" + System.currentTimeMillis() + "\nout=" + config.outDir
                 + "\nmount=" + config.mount + "\nfps=" + config.fps + "\nbitrate=" + config.bitrate
-                + "\nsegment=" + config.segmentSeconds + "\nminfree=" + config.minFreePercent + "\n";
+                + "\nsegment=" + config.segmentSeconds + "\nminfree=" + config.minFreePercent
+                + "\nencoder=" + config.encoder + "\n";
         try (FileOutputStream out = new FileOutputStream(tmp)) {
             out.write(text.getBytes(StandardCharsets.US_ASCII));
         } catch (IOException e) {

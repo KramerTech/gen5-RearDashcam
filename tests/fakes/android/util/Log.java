@@ -1,0 +1,11 @@
+package android.util;
+
+public final class Log {
+    public static String lastError;
+    public static int i(String tag, String message) { return 0; }
+    public static int w(String tag, String message) { return 0; }
+    public static int e(String tag, String message, Throwable error) {
+        lastError = message;
+        return 0;
+    }
+}

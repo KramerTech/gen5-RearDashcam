@@ -10,7 +10,7 @@ import android.os.Handler;
 import java.nio.ByteBuffer;
 
 /**
- * Camera to hardware H.264 encoder to {@link SegmentWriter}. Everything here runs on the main
+ * Camera to H.264 encoder to {@link SegmentWriter}. Everything here runs on the main
  * looper thread, where the camera delivers its callbacks.
  * <p>
  * Frames are taken as YUYV, the format the camera captures in, and converted to I420 here: the
@@ -19,8 +19,6 @@ import java.nio.ByteBuffer;
  */
 @SuppressWarnings("deprecation")
 final class Recorder implements Camera.PreviewCallback, Camera.ErrorCallback {
-    /** Gen5W's VPU H.264 encoder. It isn't in media_codecs.xml, but MediaCodec can open it by name. */
-    private static final String ENCODER = "OMX.TCC.ENC.avc";
     private static final int CAMERA_ID = 0;
     private static final int CALLBACK_BUFFERS = 4;
     /** The camera's frame period (NTSC, 59.94 Hz). Timestamps snap to it: arrival times jitter. */
@@ -93,7 +91,7 @@ final class Recorder implements Camera.PreviewCallback, Camera.ErrorCallback {
                 startBlank();
                 return;
             }
-            if (!config.debugNoEncode) encoder = MediaCodec.createByCodecName(ENCODER);
+            if (!config.debugNoEncode) encoder = createEncoder();
             if (encoder != null) {
             MediaFormat f = MediaFormat.createVideoFormat("video/avc", width, height);
             f.setInteger(MediaFormat.KEY_COLOR_FORMAT, MediaCodecInfo.CodecCapabilities.COLOR_FormatYUV420Planar);
@@ -127,11 +125,17 @@ final class Recorder implements Camera.PreviewCallback, Camera.ErrorCallback {
             convertNs = 0;
             encoded = 0;
             active = true;
-            Log.i("camera started");
+            Log.i("camera started (" + config.encoder + ")");
         } catch (Throwable t) {
-            Log.e("can't start recording", t);
+            Log.e("can't start recording with encoder " + config.encoder, t);
             stop();
         }
+    }
+
+    private MediaCodec createEncoder() throws java.io.IOException {
+        // Keep the selection strict: a MIME-type fallback may silently open a hardware encoder
+        // when software was requested. Let start() log the failure and clean up instead.
+        return MediaCodec.createByCodecName(config.encoder);
     }
 
     /**
@@ -353,7 +357,7 @@ final class Recorder implements Camera.PreviewCallback, Camera.ErrorCallback {
 
     /** Debugging: the encoder alone, fed blank frames at the configured rate. */
     private void startBlank() throws java.io.IOException {
-        encoder = MediaCodec.createByCodecName(ENCODER);
+        encoder = createEncoder();
         MediaFormat f = MediaFormat.createVideoFormat("video/avc", width, height);
         f.setInteger(MediaFormat.KEY_COLOR_FORMAT, MediaCodecInfo.CodecCapabilities.COLOR_FormatYUV420Planar);
         f.setInteger(MediaFormat.KEY_BIT_RATE, config.bitrate);
@@ -369,7 +373,7 @@ final class Recorder implements Camera.PreviewCallback, Camera.ErrorCallback {
         active = true;
         final byte[] blank = new byte[frameLength];
         for (int i = 0; i < blank.length; i += 2) blank[i + 1] = (byte) 128;
-        Log.i("debug: encoder only, blank frames");
+        Log.i("debug: encoder only (" + config.encoder + "), blank frames");
         handler.post(new Runnable() {
             @Override
             public void run() {
@@ -414,7 +418,11 @@ final class Recorder implements Camera.PreviewCallback, Camera.ErrorCallback {
                     byte[] data = new byte[info.size];
                     b.get(data);
                     encoder.releaseOutputBuffer(o, false);
-                    codecConfig = data;
+                    if (codecConfig == null || TsWriter.hasNal(TsWriter.annexB(data), 7)) {
+                        codecConfig = data;
+                    } else {
+                        codecConfig = concat(codecConfig, data);
+                    }
                 } else if (info.size > 0) {
                     writer.frame(b, info.size, info.presentationTimeUs,
                             (info.flags & MediaCodec.BUFFER_FLAG_SYNC_FRAME) != 0, codecConfig);

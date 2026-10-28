@@ -21,6 +21,8 @@ final class RecorderLink {
     static final long LEASE_RENEW_MS = 2000;
     /** The heartbeat is rewritten every second while the recorder runs. */
     private static final long HEARTBEAT_STALE_MS = 10_000;
+    static final String HW_ENCODER = "OMX.TCC.ENC.avc";
+    static final String SW_ENCODER = "OMX.google.h264.encoder";
 
     /** recording, paused (player open), reverse, caroff, off, nodrive, starting; or null if there's no status. */
     String state;
@@ -29,6 +31,7 @@ final class RecorderLink {
     String out = "/storage/usb0/Dashcam";
     String mount = "/storage/usb0";
     int fps = 15, bitrate = 1_500_000, segment = 60, minFreePercent = 5;
+    String encoder = HW_ENCODER;
 
     static RecorderLink read() {
         RecorderLink r = new RecorderLink();
@@ -49,6 +52,7 @@ final class RecorderLink {
                         case "bitrate": r.bitrate = Integer.parseInt(v); break;
                         case "segment": r.segment = Integer.parseInt(v); break;
                         case "minfree": r.minFreePercent = Integer.parseInt(v); break;
+                        case "encoder": r.encoder = v; break;
                         default: break;
                     }
                 } catch (NumberFormatException ignored) {
@@ -69,6 +73,7 @@ final class RecorderLink {
     static final class Settings {
         boolean enabled = true;
         int fps, bitrate, segment, minFree;
+        String encoder;
 
         /**
          * The saved settings; without a file (first run, or after a package update reinstalled
@@ -85,6 +90,7 @@ final class RecorderLink {
                     s.bitrate = r.bitrate;
                     s.segment = r.segment;
                     s.minFree = r.minFreePercent;
+                    s.encoder = r.encoder;
                 }
                 return s;
             }
@@ -100,6 +106,7 @@ final class RecorderLink {
                             case "bitrate": s.bitrate = Integer.parseInt(v); break;
                             case "segment": s.segment = Integer.parseInt(v); break;
                             case "minfree": s.minFree = Integer.parseInt(v); break;
+                            case "encoder": s.encoder = v; break;
                             default: break;
                         }
                     } catch (NumberFormatException ignored) {
@@ -119,6 +126,7 @@ final class RecorderLink {
             if (bitrate > 0) b.append("bitrate=").append(bitrate).append('\n');
             if (segment > 0) b.append("segment=").append(segment).append('\n');
             if (minFree > 0) b.append("minfree=").append(minFree).append('\n');
+            if (encoder != null && !encoder.isEmpty()) b.append("encoder=").append(encoder).append('\n');
             File dir = c.getFilesDir();
             File tmp = new File(dir, CONF + ".tmp");
             try (FileOutputStream out = new FileOutputStream(tmp)) {

@@ -21,6 +21,7 @@ public final class SettingsActivity extends Activity {
     private static final int[] BITRATES = {1_000_000, 1_500_000, 2_000_000, 3_000_000, 5_000_000};
     private static final int[] SEGMENTS = {60, 120, 300};
     private static final int[] MIN_FREE = {5, 10, 20};
+    private static final String[] ENCODERS = {RecorderLink.HW_ENCODER, RecorderLink.SW_ENCODER};
 
     private RecorderLink.Settings settings;
     private RecorderLink rec;
@@ -39,6 +40,7 @@ public final class SettingsActivity extends Activity {
         if (settings.bitrate == 0) settings.bitrate = rec.bitrate;
         if (settings.segment == 0) settings.segment = rec.segment;
         if (settings.minFree == 0) settings.minFree = rec.minFreePercent;
+        if (settings.encoder == null || settings.encoder.isEmpty()) settings.encoder = rec.encoder;
 
         LinearLayout root = new LinearLayout(this);
         root.setOrientation(LinearLayout.VERTICAL);
@@ -96,6 +98,11 @@ public final class SettingsActivity extends Activity {
         row("Keep free", "The oldest recordings are deleted to keep this much of the drive free.", MIN_FREE, settings.minFree, new Pick() {
             public String label(int v) { return v + "%"; }
             public void set(int v) { settings.minFree = v; }
+        });
+        int encIdx = RecorderLink.SW_ENCODER.equals(settings.encoder) ? 1 : 0;
+        row("Encoder", "Software avoids frame bleed when using CarPlay or playing video.", new int[] {0, 1}, encIdx, new Pick() {
+            public String label(int v) { return v == 0 ? "Hardware" : "Software"; }
+            public void set(int v) { settings.encoder = ENCODERS[v]; }
         });
         estimate = text("", 17);
         estimate.setTextColor(getResources().getColor(R.color.text_dim));

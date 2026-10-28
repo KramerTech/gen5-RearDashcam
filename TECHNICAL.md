@@ -14,7 +14,7 @@ A second service, `svc/watchdog.sh`, kills the recorder if it stops responding (
 ## Recording
 
 - The backup camera is opened through Android's standard camera API, camera 0. Frames come in at 720×480, 59.94 Hz, in YUYV.
-- Frames are dropped down to the chosen frame rate on an even cadence. They're converted to I420 and mirrored left to right in the same pass, because the backup camera sends a mirror image. Then they go to the head unit's hardware H.264 encoder (`OMX.TCC.ENC.avc`), with a keyframe every second.
+- Frames are dropped down to the chosen frame rate on an even cadence. They're converted to I420 and mirrored left to right in the same pass, because the backup camera sends a mirror image. Then they go to the selected H.264 encoder (hardware by default), with a keyframe every second.
 - Encoded video is written as MPEG-TS files, one per minute by default, named by start time (`20261026_220609.ts`). A new file always starts on a keyframe. The file is synced to the drive every second, so a sudden power cut loses at most about a second.
 - There's no audio; the camera has none.
 - Before each new file, the oldest files in the `Dashcam` folder are deleted until the chosen share of the drive is free. Files in `Saved` and `Snapshots` are never touched.
@@ -30,8 +30,11 @@ Set in the app under **Settings**:
 | Quality | 1–5 Mbit/s | 1.5 Mbit/s (about 0.7 GB per hour) |
 | File length | 1, 2, 5 minutes | 1 minute |
 | Keep free | 5, 10, 20% of the drive | 5% |
+| Encoder | Hardware (`OMX.TCC.ENC.avc`), Software (`OMX.google.h264.encoder`) | Hardware |
 
 Changing one of these restarts the recorder with the new values. Stopping and starting recording from the app takes effect without a restart.
+
+The recorder opens the selected encoder by name. If it is unavailable, recording stays stopped and the failure is logged with the encoder name; it never silently switches to another encoder. The guard retries startup every five seconds. The `--encoder=hw` or `--encoder=sw` argument sets the default when no encoder is saved in the app's settings.
 
 Less common options go in `/data/nemesis/apps/dashcam/dashcam.conf`, as arguments to the recorder (`DASHCAM_ARGS="--out=/storage/usb0/MyFolder"`). Updating the package replaces that file.
 

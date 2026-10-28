@@ -6,6 +6,10 @@ package dev.skramer.dashcam;
  */
 final class Config implements Cloneable {
     private static final String APP_FILES = "/data/data/dev.skramer.dashcam.player/files/";
+    /** Gen5W's VPU H.264 encoder. It isn't in media_codecs.xml, but MediaCodec can open it by name. */
+    static final String HW_ENCODER = "OMX.TCC.ENC.avc";
+    /** Android's CPU H.264 encoder; avoids VPU memory conflicts with CarPlay and video playback. */
+    static final String SW_ENCODER = "OMX.google.h264.encoder";
 
     /** Where segments go. Recording waits until this is on a mounted drive. */
     String outDir = "/storage/usb0/Dashcam";
@@ -21,6 +25,8 @@ final class Config implements Cloneable {
     int segmentSeconds = 60;
     /** Oldest segments are deleted to keep at least this share of the drive free. */
     int minFreePercent = 5;
+    /** MediaCodec encoder name (HW_ENCODER or SW_ENCODER). */
+    String encoder = HW_ENCODER;
     /** Flip the picture left to right: the backup camera sends a mirror image. */
     boolean mirror = true;
     /** Set if recordings come out with red and blue swapped. */
@@ -45,9 +51,9 @@ final class Config implements Cloneable {
     /** Recording turned on in the app. */
     boolean enabled = true;
     /**
-     * The app's settings (key=value lines: enabled, fps, bitrate, segment, minfree). The recorder
-     * keeps a copy in stateDir, used while the app's file is missing: updating the package
-     * reinstalls the app, which wipes its files.
+     * The app's settings (key=value lines: enabled, fps, bitrate, segment, minfree, encoder). The
+     * recorder keeps a copy in stateDir, used while the app's file is missing: updating the
+     * package reinstalls the app, which wipes its files.
      */
     String appConf = APP_FILES + "recorder.conf";
     /** Touched every couple of seconds while the player is open; recording pauses meanwhile. */
@@ -69,6 +75,7 @@ final class Config implements Cloneable {
                 case "bitrate": c.bitrate = Integer.parseInt(v); break;
                 case "segment": c.segmentSeconds = Integer.parseInt(v); break;
                 case "min-free-percent": c.minFreePercent = Integer.parseInt(v); break;
+                case "encoder": c.encoder = parseEncoder(v, c.encoder); break;
                 case "mirror": c.mirror = Boolean.parseBoolean(v); break;
                 case "swap-uv": c.swapUv = Boolean.parseBoolean(v); break;
                 case "debug-no-encode": c.debugNoEncode = Boolean.parseBoolean(v); break;
@@ -83,6 +90,13 @@ final class Config implements Cloneable {
             }
         }
         return c;
+    }
+
+    static String parseEncoder(String v, String fallback) {
+        if (v == null || v.isEmpty()) return fallback;
+        if ("hw".equalsIgnoreCase(v) || "hardware".equalsIgnoreCase(v)) return HW_ENCODER;
+        if ("sw".equalsIgnoreCase(v) || "software".equalsIgnoreCase(v)) return SW_ENCODER;
+        return v;
     }
 
     /**
@@ -106,6 +120,7 @@ final class Config implements Cloneable {
                         case "bitrate": c.bitrate = range(Integer.parseInt(v), 250_000, 8_000_000, c.bitrate); break;
                         case "segment": c.segmentSeconds = range(Integer.parseInt(v), 10, 600, c.segmentSeconds); break;
                         case "minfree": c.minFreePercent = range(Integer.parseInt(v), 1, 50, c.minFreePercent); break;
+                        case "encoder": c.encoder = parseEncoder(v, c.encoder); break;
                         default: break;
                     }
                 } catch (NumberFormatException e) {
@@ -129,7 +144,7 @@ final class Config implements Cloneable {
 
     /** The settings a running recorder can't change: changing them means a restart. */
     String recordingSettings() {
-        return fps + "/" + bitrate + "/" + segmentSeconds + "/" + minFreePercent;
+        return fps + "/" + bitrate + "/" + segmentSeconds + "/" + minFreePercent + "/" + encoder;
     }
 
     Config copy() {
@@ -142,7 +157,7 @@ final class Config implements Cloneable {
 
     @Override
     public String toString() {
-        return width + "x" + height + "@" + fps + " " + bitrate / 1000 + " kbit/s, " + segmentSeconds
+        return width + "x" + height + "@" + fps + " " + bitrate / 1000 + " kbit/s (" + encoder + "), " + segmentSeconds
                 + " s segments in " + outDir + " (keep " + minFreePercent + "% free)" + (mirror ? ", mirrored" : "")
                 + (swapUv ? ", swap-uv" : "")
                 + (enabled ? "" : ", turned off");
