@@ -69,6 +69,7 @@ jobs:
         env:
           DASHCAM_KEYSTORE_B64: ${{ secrets.DASHCAM_KEYSTORE_B64 }}
           DASHCAM_KEY_PASS: ${{ secrets.DASHCAM_KEY_PASS }}
+          SIGNING_CERT_SHA256: ${{ secrets.SIGNING_CERT_SHA256 || vars.SIGNING_CERT_SHA256 }}
         run: |
           [ -n "$DASHCAM_KEYSTORE_B64" ] && [ -n "$DASHCAM_KEY_PASS" ] \
             || { echo "::error::DASHCAM_KEYSTORE_B64 and DASHCAM_KEY_PASS secrets are required"; exit 1; }

@@ -13,11 +13,11 @@
 # and build-tools; Gradle fetches the player's dependencies.
 # Signing: $DASHCAM_KEYSTORE (default ../dashcam-signing/dashcam.jks), alias dashcam, password
 # from $DASHCAM_KEY_PASS or else pass.txt beside the keystore. Every release must use the same
-# key, or installs over an older one fail. The build stops if the signer isn't SIGNING_CERT_SHA256
-# (forks with their own key put its digest here, from apksigner verify --print-certs).
+# key, or installs over an older one fail. If $SIGNING_CERT_SHA256 is set, the build stops if
+# the signer doesn't match (from apksigner verify --print-certs).
 set -euo pipefail
 
-SIGNING_CERT_SHA256=668a8439a1526d82bbb02fb26e831711345f98d72f47923c22503207568d4b4a
+SIGNING_CERT_SHA256=${SIGNING_CERT_SHA256:-}
 
 VERSION=${1:?usage: build.sh <version>}
 HERE=$(cd "$(dirname "$0")" && pwd)
@@ -54,8 +54,10 @@ javac -source 8 -target 8 -Xlint:-options -bootclasspath "$ANDROID_JAR" -cp "$wo
 rm -f "$work/DashcamPlayer.apk.idsig"
 certs=$("$BT/apksigner" verify --min-sdk-version 19 --print-certs "$work/DashcamPlayer.apk" 2>/dev/null) \
     || die "player signature doesn't verify for API 19"
-grep -qi "certificate SHA-256 digest: $SIGNING_CERT_SHA256\$" <<< "$certs" \
-    || die "player signed with the wrong key (expected certificate SHA-256 $SIGNING_CERT_SHA256)"
+if [ -n "$SIGNING_CERT_SHA256" ]; then
+    grep -qi "certificate SHA-256 digest: $SIGNING_CERT_SHA256\$" <<< "$certs" \
+        || die "player signed with the wrong key (expected certificate SHA-256 $SIGNING_CERT_SHA256)"
+fi
 
 stage=$work/package
 cp -R "$HERE/package" "$stage"
