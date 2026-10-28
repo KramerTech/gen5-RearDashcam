@@ -2,10 +2,21 @@ name: release
 
 # Push a tag v<version>, e.g. v0.7, to build that version, sign the app, and
 # publish a GitHub release. An annotated tag's message becomes the release's
-# "Changes" section.
+# "Changes" section. Can also be run manually from the Actions tab.
 on:
   push:
     tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version to build (e.g. 0.7; optional when run on a v* tag)"
+        required: false
+        type: string
+      publish:
+        description: "Publish a GitHub release"
+        required: false
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -13,19 +24,33 @@ permissions:
 jobs:
   build:
     runs-on: ubuntu-24.04
+    outputs:
+      tag: ${{ steps.tag.outputs.tag }}
+      ver: ${{ steps.tag.outputs.ver }}
     steps:
       - uses: actions/checkout@v7
 
       - name: Parse tag
         id: tag
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
         run: |
-          tag=${GITHUB_REF_NAME}
-          ver=${tag#v}
-          [[ $ver =~ ^[0-9]+(\.[0-9]+){1,2}$ ]] || { echo "::error::tag must look like v0.7"; exit 1; }
+          if [ -n "$INPUT_VERSION" ]; then
+            ver=${INPUT_VERSION#v}
+            tag="v$ver"
+          elif [[ ${GITHUB_REF_NAME} =~ ^v[0-9]+(\.[0-9]+){1,2}$ ]]; then
+            tag=${GITHUB_REF_NAME}
+            ver=${tag#v}
+          else
+            ver=0.0
+            tag=v0.0
+          fi
+          [[ $ver =~ ^[0-9]+(\.[0-9]+){1,2}$ ]] || { echo "::error::version must look like 0.7"; exit 1; }
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
           echo "ver=$ver" >> "$GITHUB_OUTPUT"
-          # Annotated tag message, if any (a lightweight tag has none).
-          git fetch --no-tags --force origin "refs/tags/$tag:refs/tags/$tag"
-          if [ "$(git cat-file -t "refs/tags/$tag")" = tag ]; then
+          # Annotated tag message, if any (a lightweight or unreleased tag has none).
+          if git fetch --no-tags --force origin "refs/tags/$tag:refs/tags/$tag" 2>/dev/null \
+              && [ "$(git cat-file -t "refs/tags/$tag")" = tag ]; then
             git for-each-ref --format='%(contents:subject)%0a%0a%(contents:body)' "refs/tags/$tag" > "$RUNNER_TEMP/notes.txt"
           else
             : > "$RUNNER_TEMP/notes.txt"
@@ -83,6 +108,7 @@ jobs:
   # write access to the repo.
   release:
     needs: build
+    if: github.event_name == 'push' || inputs.publish
     runs-on: ubuntu-24.04
     permissions:
       contents: write
@@ -95,7 +121,13 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          tag=${GITHUB_REF_NAME}
+          tag="${{ needs.build.outputs.tag }}"
+          ver="${{ needs.build.outputs.ver }}"
           mv dist/release-body.md body.md
-          gh release create "$tag" -R "$GITHUB_REPOSITORY" --verify-tag --latest \
-            --title "Rear Dashcam ${tag#v} for Gen5W" --notes-file body.md dist/*
+          if [ "${{ github.event_name }}" = "push" ]; then
+            gh release create "$tag" -R "$GITHUB_REPOSITORY" --verify-tag --latest \
+              --title "Rear Dashcam $ver for Gen5W" --notes-file body.md dist/*
+          else
+            gh release create "$tag" -R "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --latest \
+              --title "Rear Dashcam $ver for Gen5W" --notes-file body.md dist/*
+          fi
