@@ -2,6 +2,9 @@
 
 Turns your backup camera into a dashcam for Hyundai, Kia and Genesis cars with the Gen5W head unit. It records to a USB drive whenever the car is on, and a **Dashcam** app lets you watch the recordings on the car's screen.
 
+> [!CAUTION]
+> **Experimental software. It may brick your head unit, and it comes with no warranty of any kind.** It runs with root access, takes over your backup camera, and changes the head unit's display hardware settings while it records. It's a personal hobby project, not made or approved by Hyundai, Kia or Genesis, and it has only been tested on a few cars. Installing it can void your warranty, and if anything goes wrong (a frozen screen, a backup camera that won't come up, a head unit that won't start) that's yours to fix. Use it at your own risk.
+
 ## What you get
 
 - **Always recording while the car is on.** Nothing to open or turn on. It stops when the car is off.
