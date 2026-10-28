@@ -34,10 +34,6 @@
             android:configChanges="orientation|screenSize|keyboardHidden"
             android:screenOrientation="landscape" />
         <activity
-            android:name=".SettingsActivity"
-            android:configChanges="orientation|screenSize|keyboardHidden"
-            android:screenOrientation="landscape" />
-        <activity
             android:name=".CameraDebugActivity"
             android:configChanges="orientation|screenSize|keyboardHidden"
             android:screenOrientation="landscape" />

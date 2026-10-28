@@ -30,7 +30,8 @@ public final class MainActivity extends Activity {
     private final ExecutorService io = Executors.newSingleThreadExecutor();
     private ImageView statusDot;
     private TextView statusText, driveText, dayTitle, empty;
-    private Button recordButton, savedButton;
+    private View statusToggle;
+    private Button savedButton;
     private ListView daysView;
     private DayView dayView;
     private View body;
@@ -59,7 +60,7 @@ public final class MainActivity extends Activity {
         driveText = (TextView) findViewById(R.id.driveText);
         dayTitle = (TextView) findViewById(R.id.dayTitle);
         empty = (TextView) findViewById(R.id.empty);
-        recordButton = (Button) findViewById(R.id.recordButton);
+        statusToggle = findViewById(R.id.statusToggle);
         savedButton = (Button) findViewById(R.id.savedButton);
         daysView = (ListView) findViewById(R.id.days);
         dayView = (DayView) findViewById(R.id.dayView);
@@ -86,7 +87,7 @@ public final class MainActivity extends Activity {
                 play(c == null ? hourStart : Math.max(hourStart, c.start));
             }
         });
-        recordButton.setOnClickListener(new View.OnClickListener() {
+        statusToggle.setOnClickListener(new View.OnClickListener() {
             @Override
             public void onClick(View v) {
                 boolean on = !rec.enabled();
@@ -98,7 +99,7 @@ public final class MainActivity extends Activity {
                     Toast.makeText(MainActivity.this, "Couldn't save: " + e.getMessage(), Toast.LENGTH_LONG).show();
                     return;
                 }
-                recordButton.setEnabled(false);
+                statusToggle.setEnabled(false);
                 statusText.setText(on ? "Turning recording on…" : "Turning recording off…");
                 handler.postDelayed(new Runnable() {
                     @Override
@@ -114,10 +115,11 @@ public final class MainActivity extends Activity {
                 startActivity(new Intent(MainActivity.this, SavedActivity.class));
             }
         });
-        findViewById(R.id.settingsButton).setOnClickListener(new View.OnClickListener() {
+        driveText.setOnLongClickListener(new View.OnLongClickListener() {
             @Override
-            public void onClick(View v) {
-                startActivity(new Intent(MainActivity.this, SettingsActivity.class));
+            public boolean onLongClick(View v) {
+                startActivity(new Intent(MainActivity.this, CameraDebugActivity.class));
+                return true;
             }
         });
         findViewById(R.id.latestButton).setOnClickListener(new View.OnClickListener() {
@@ -237,8 +239,8 @@ public final class MainActivity extends Activity {
         }
         statusDot.setColorFilter(color);
         statusText.setText(text);
-        recordButton.setText(rec.enabled() ? "Stop recording" : "Start recording");
-        recordButton.setEnabled(rec.running);
+        statusToggle.setActivated(rec.running && rec.enabled());
+        statusToggle.setEnabled(rec.running);
 
         if (space == null) {
             driveText.setText("No drive at " + rec.mount);

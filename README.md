@@ -29,7 +29,7 @@ adb push dashcam-<version>.zip /data/local/tmp/
 adb shell '/system/xbin/nemesis install --update /data/local/tmp/dashcam-<version>.zip'
 ```
 
-To update, install the new version the same way. Your settings and saved recordings are kept.
+To update, install the new version the same way. Your recordings, saved clips and the on/off setting are kept.
 
 ## Finding your recordings
 

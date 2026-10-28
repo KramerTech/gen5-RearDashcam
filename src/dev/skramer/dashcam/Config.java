@@ -1,8 +1,9 @@
 package dev.skramer.dashcam;
 
 /**
- * Settings: from --key=value arguments (the service script passes them), then the player app's
- * settings file, which only the app can write.
+ * Settings: from --key=value arguments (dashcam.conf; the service script passes them), then
+ * the player app's settings file, which only the app can write and which only turns recording on
+ * and off. The defaults are what's been tested: change them only to experiment.
  */
 final class Config implements Cloneable {
     private static final String APP_FILES = "/data/data/dev.skramer.dashcam.player/files/";
@@ -16,9 +17,13 @@ final class Config implements Cloneable {
     /** Recording size; the camera hardware scales its picture to it. */
     int width = 720;
     int height = 480;
-    /** The camera delivers 60 fps; frames are dropped down to this rate. */
-    int fps = 15;
-    int bitrate = 1_500_000;
+    /**
+     * The camera delivers 60 fps; frames are dropped down to this rate. Each frame kept costs a
+     * copy out of uncached memory (about 23 ms at 720x480), so this is what sets the CPU load.
+     */
+    int fps = 20;
+    /** About 1.35 GB an hour. */
+    int bitrate = 3_000_000;
     int segmentSeconds = 60;
     /** Oldest segments are deleted to keep at least this share of the drive free. */
     int minFreePercent = 5;
@@ -39,7 +44,7 @@ final class Config implements Cloneable {
     /** Recording turned on in the app. */
     boolean enabled = true;
     /**
-     * The app's settings (key=value lines: enabled, fps, bitrate, segment, minfree). The recorder
+     * The app's settings (key=value lines; only enabled is read). The recorder
      * keeps a copy in stateDir, used while the app's file is missing: updating the package
      * reinstalls the app, which wipes its files.
      */
@@ -94,22 +99,9 @@ final class Config implements Cloneable {
         if (!f.isFile()) f = savedSettings();
         if (!f.isFile()) return c;
         try (java.io.BufferedReader r = new java.io.BufferedReader(new java.io.FileReader(f))) {
+            // Older apps also saved fps, bitrate, segment and minfree; those are fixed now.
             for (String line; (line = r.readLine()) != null; ) {
-                int eq = line.indexOf('=');
-                if (eq < 0) continue;
-                String k = line.substring(0, eq).trim(), v = line.substring(eq + 1).trim();
-                try {
-                    switch (k) {
-                        case "enabled": c.enabled = Boolean.parseBoolean(v); break;
-                        case "fps": c.fps = range(Integer.parseInt(v), 1, 30, c.fps); break;
-                        case "bitrate": c.bitrate = range(Integer.parseInt(v), 250_000, 8_000_000, c.bitrate); break;
-                        case "segment": c.segmentSeconds = range(Integer.parseInt(v), 10, 600, c.segmentSeconds); break;
-                        case "minfree": c.minFreePercent = range(Integer.parseInt(v), 1, 50, c.minFreePercent); break;
-                        default: break;
-                    }
-                } catch (NumberFormatException e) {
-                    Log.w("ignoring " + k + "=" + v + " in " + appConf);
-                }
+                if (line.trim().startsWith("enabled=")) c.enabled = Boolean.parseBoolean(line.trim().substring(8).trim());
             }
         } catch (java.io.IOException e) {
             Log.w("can't read " + appConf + ": " + e);
@@ -120,15 +112,6 @@ final class Config implements Cloneable {
     /** The recorder's copy of the app's settings. */
     java.io.File savedSettings() {
         return new java.io.File(stateDir, "settings");
-    }
-
-    private static int range(int v, int min, int max, int fallback) {
-        return v >= min && v <= max ? v : fallback;
-    }
-
-    /** The settings a running recorder can't change: changing them means a restart. */
-    String recordingSettings() {
-        return fps + "/" + bitrate + "/" + segmentSeconds + "/" + minFreePercent;
     }
 
     Config copy() {

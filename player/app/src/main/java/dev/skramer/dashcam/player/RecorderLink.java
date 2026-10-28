@@ -28,7 +28,7 @@ final class RecorderLink {
     boolean running;
     String out = "/storage/usb0/Dashcam";
     String mount = "/storage/usb0";
-    int fps = 15, bitrate = 1_500_000, segment = 60, minFreePercent = 5;
+    int fps = 20, bitrate = 3_000_000, segment = 60, minFreePercent = 5;
 
     static RecorderLink read() {
         RecorderLink r = new RecorderLink();
@@ -65,46 +65,25 @@ final class RecorderLink {
         return !"off".equals(state);
     }
 
-    /** What the app asks of the recorder. Unset fields keep the recorder's defaults. */
+    /** What the app asks of the recorder: recording on or off. Everything else is fixed. */
     static final class Settings {
         boolean enabled = true;
-        int fps, bitrate, segment, minFree;
 
         /**
-         * The saved settings; without a file (first run, or after a package update reinstalled
-         * the app) whatever the recorder is using, so saving one change keeps the rest.
+         * The saved setting; without a file (first run, or after a package update reinstalled
+         * the app) whatever the recorder is doing.
          */
         static Settings read(Context c) {
             Settings s = new Settings();
             File f = new File(c.getFilesDir(), CONF);
             if (!f.isFile()) {
                 RecorderLink r = RecorderLink.read();
-                if (r.state != null) {
-                    s.enabled = r.enabled();
-                    s.fps = r.fps;
-                    s.bitrate = r.bitrate;
-                    s.segment = r.segment;
-                    s.minFree = r.minFreePercent;
-                }
+                if (r.state != null) s.enabled = r.enabled();
                 return s;
             }
             try (BufferedReader in = new BufferedReader(new FileReader(f))) {
                 for (String line; (line = in.readLine()) != null; ) {
-                    int eq = line.indexOf('=');
-                    if (eq < 0) continue;
-                    String k = line.substring(0, eq), v = line.substring(eq + 1);
-                    try {
-                        switch (k) {
-                            case "enabled": s.enabled = Boolean.parseBoolean(v); break;
-                            case "fps": s.fps = Integer.parseInt(v); break;
-                            case "bitrate": s.bitrate = Integer.parseInt(v); break;
-                            case "segment": s.segment = Integer.parseInt(v); break;
-                            case "minfree": s.minFree = Integer.parseInt(v); break;
-                            default: break;
-                        }
-                    } catch (NumberFormatException ignored) {
-                        // keep unset
-                    }
+                    if (line.startsWith("enabled=")) s.enabled = Boolean.parseBoolean(line.substring(8).trim());
                 }
             } catch (IOException e) {
                 // nothing saved yet
@@ -112,13 +91,9 @@ final class RecorderLink {
             return s;
         }
 
-        /** Saves for the recorder, which picks it up within a second (and restarts for anything but on/off). */
+        /** Saves for the recorder, which picks it up within a second. */
         void write(Context c) throws IOException {
             StringBuilder b = new StringBuilder("enabled=").append(enabled).append('\n');
-            if (fps > 0) b.append("fps=").append(fps).append('\n');
-            if (bitrate > 0) b.append("bitrate=").append(bitrate).append('\n');
-            if (segment > 0) b.append("segment=").append(segment).append('\n');
-            if (minFree > 0) b.append("minfree=").append(minFree).append('\n');
             File dir = c.getFilesDir();
             File tmp = new File(dir, CONF + ".tmp");
             try (FileOutputStream out = new FileOutputStream(tmp)) {

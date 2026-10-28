@@ -16,7 +16,7 @@ import java.util.ArrayList;
  * is out of park, but leaves it to each app to obey. Every screen checks it when created and
  * resumed: if the car is regulated, Hyundai's own "not available while driving" popup is shown,
  * every screen is finished and the process exits. A receiver does the same when the car leaves
- * park (popup only if the app was in use). Same rules as the Gen5W SmartTube build.
+ * park (popup only if the app was in use).
  */
 final class DrivingGuard extends BroadcastReceiver {
     private static final String SERVICE = "com.hkmc.regulation";

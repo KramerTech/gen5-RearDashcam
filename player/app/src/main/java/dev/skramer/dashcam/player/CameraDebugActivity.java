@@ -10,11 +10,13 @@ import android.os.SystemClock;
 import android.util.TypedValue;
 import android.view.Gravity;
 import android.view.View;
+import android.view.ViewGroup;
 import android.widget.Button;
 import android.widget.FrameLayout;
 import android.widget.ImageButton;
 import android.widget.LinearLayout;
-import android.widget.ScrollView;
+import android.widget.ArrayAdapter;
+import android.widget.ListView;
 import android.widget.TextView;
 import java.io.BufferedReader;
 import java.io.File;
@@ -59,19 +61,18 @@ public final class CameraDebugActivity extends Activity {
 
     private final Handler ui = new Handler();
     private float dp;
-    private TextView terminal, viewStatus, recStatus;
-    private ScrollView terminalScroll;
+    private TextView viewStatus, recStatus;
+    /** The log as shown: a list, so adding a line only lays out the lines on screen. */
+    private ArrayAdapter<String> lines;
     private RamView picture;
     private LinearLayout cameraRow, sizeRow;
     private Button reportButton;
     /** The last frame drawn, for the report's picture. */
     private volatile byte[] latest;
     private volatile int latestW, latestH;
-    private int terminalLines;
-    private boolean scrollPending;
 
     private String camera = "auto", size = SIZES[0];
-    private final ArrayList<String> shown = new ArrayList<>(), all = new ArrayList<>();
+    private final ArrayList<String> all = new ArrayList<>();
     private long seen = -1;
     private String report = "", lastState;
     private volatile String lastScan = "";
@@ -239,14 +240,27 @@ public final class CameraDebugActivity extends Activity {
         recStatus.setPadding(px(8), px(6), px(8), px(6));
         recStatus.setBackgroundColor(0xFF10161C);
         right.addView(recStatus);
-        terminalScroll = new ScrollView(this);
-        terminal = new TextView(this);
-        terminal.setTypeface(Typeface.MONOSPACE);
-        terminal.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12);
-        terminal.setTextColor(0xFF7CE38B);
-        terminal.setPadding(px(8), px(6), px(8), px(6));
-        terminalScroll.addView(terminal);
-        right.addView(terminalScroll, new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 1));
+        lines = new ArrayAdapter<String>(this, 0) {
+            @Override
+            public View getView(int position, View convert, ViewGroup parent) {
+                TextView t = (TextView) convert;
+                if (t == null) {
+                    t = new TextView(CameraDebugActivity.this);
+                    t.setTypeface(Typeface.MONOSPACE);
+                    t.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12);
+                    t.setTextColor(0xFF7CE38B);
+                    t.setPadding(px(8), px(1), px(8), px(1));
+                }
+                t.setText(getItem(position));
+                return t;
+            }
+        };
+        ListView terminal = new ListView(this);
+        terminal.setAdapter(lines);
+        terminal.setDivider(null);
+        terminal.setTranscriptMode(ListView.TRANSCRIPT_MODE_NORMAL);  // follows new lines unless scrolled up
+        terminal.setStackFromBottom(true);
+        right.addView(terminal, new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, 0, 1));
         LinearLayout.LayoutParams rl = new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.MATCH_PARENT, 9);
         rl.leftMargin = px(12);
         body.addView(right, rl);
@@ -530,27 +544,8 @@ public final class CameraDebugActivity extends Activity {
             all.add(line);
             if (all.size() > REPORT_LINES) all.remove(0);
         }
-        shown.add(line);
-        if (shown.size() > KEEP_LINES) shown.subList(0, shown.size() - KEEP_LINES).clear();
-        // Appending is cheap; laying out the whole log again isn't, so that's only every 100 lines.
-        if (++terminalLines > KEEP_LINES + 100) {
-            StringBuilder b = new StringBuilder();
-            for (String l : shown) b.append(l).append('\n');
-            terminal.setText(b);
-            terminalLines = shown.size();
-        } else {
-            terminal.append(line + "\n");
-        }
-        if (!scrollPending) {
-            scrollPending = true;
-            terminalScroll.post(new Runnable() {
-                @Override
-                public void run() {
-                    scrollPending = false;
-                    terminalScroll.fullScroll(View.FOCUS_DOWN);
-                }
-            });
-        }
+        if (lines.getCount() >= KEEP_LINES) lines.remove(lines.getItem(0));
+        lines.add(line);  // the list shows the end, and only lays out the lines on screen
     }
 
     // ---- the frames
@@ -851,7 +846,7 @@ public final class CameraDebugActivity extends Activity {
             SystemClock.sleep(120);
         }
         StringBuilder b = new StringBuilder(String.format(Locale.US, "scan %s (0x%x bytes, every 16 KiB):\n", r.name, r.length));
-        int lines = 0, firstChanged = -1, lastChanged = -1;
+        int runs = 0, firstChanged = -1, lastChanged = -1;
         for (int start = 0; start < blocks; ) {
             int end = start;
             while (end < blocks && changed[end] == changed[start] && kind[end] == kind[start]) end++;
@@ -859,13 +854,15 @@ public final class CameraDebugActivity extends Activity {
                 if (firstChanged < 0) firstChanged = start;
                 lastChanged = end - 1;
             }
-            if (lines++ < 40) {
-                b.append(String.format(Locale.US, "  0x%07x-0x%07x %6.2f MiB %s, %s\n", (long) start * BLOCK, (long) end * BLOCK,
-                        (end - start) * BLOCK / 1048576.0, changed[start] ? "CHANGING" : "still",
-                        kind[start] == '0' ? "zero" : kind[start] == '1' ? "one value" : kind[start] == 'A' ? "opaque (BGRA-like)" : "mixed/not opaque"));
+            int run = start;
+            start = end;
+            if (runs++ < 40) {
+                b.append(String.format(Locale.US, "  0x%07x-0x%07x %6.2f MiB %s, %s\n", (long) run * BLOCK, (long) end * BLOCK,
+                        (end - run) * BLOCK / 1048576.0, changed[run] ? "CHANGING" : "still",
+                        kind[run] == '0' ? "zero" : kind[run] == '1' ? "one value" : kind[run] == 'A' ? "opaque (BGRA-like)" : "mixed/not opaque"));
             }
         }
-        if (lines > 40) b.append("  (").append(lines - 40).append(" more runs)\n");
+        if (runs > 40) b.append("  (").append(runs - 40).append(" more runs)\n");
         if (firstChanged < 0) {
             b.append("  nothing changed\n");
         } else {

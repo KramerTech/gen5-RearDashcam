@@ -33,8 +33,7 @@ import java.util.concurrent.TimeUnit;
  * receivers registered without an app process, so on Gen5W it's the gear polling (which reads 1
  * for the camera button too) that does the work.
  *
- * The player app's settings file turns recording off and on; changing recording settings in it
- * restarts the recorder (the service script starts it again). The status file says what the
+ * The player app's settings file turns recording off and on. The status file says what the
  * recorder is doing.
  *
  * While the app's camera debug screen is open (see {@link CameraDebug}) the camera runs a debug
@@ -312,21 +311,13 @@ final class Guard extends Thread {
         }
     }
 
-    /**
-     * Picks up a change to the app's settings file: on/off now; anything else by letting go of
-     * the camera and exiting, so the service script starts a recorder with the new settings.
-     */
+    /** Picks up recording being turned on or off in the app. */
     private void checkAppSettings() {
         long m = appConf.lastModified();
         if (m == appConfModified) return;
         appConfModified = m;
         Config fresh = config.withAppSettings();
         saveSettingsCopy();
-        if (!fresh.recordingSettings().equals(config.recordingSettings())) {
-            Log.i("settings changed in the app; restarting with " + fresh);
-            release("restarting");
-            System.exit(0);
-        }
         if (fresh.enabled == !disabled) return;
         disabled = !fresh.enabled;
         Log.i("recording turned " + (fresh.enabled ? "on" : "off") + " in the app");

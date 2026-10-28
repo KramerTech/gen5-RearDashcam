@@ -7,7 +7,7 @@ The details behind the [README](README.md), for the curious and for anyone debug
 The package installs two things:
 
 - **The recorder**, a background service with no screen. NEMESIS starts it at boot as `svc/recorder.sh`, which runs `dashcam.jar` under `app_process`. It starts as root, keeps the steering-wheel key device open, then switches to the system user (uid 1000) with group `sdcard_r`, so it can use the camera and write to the USB drive.
-- **The Dashcam app** (`dev.skramer.dashcam.player`), for watching recordings and changing settings. The app and the recorder only talk through files (see [Files](#files)).
+- **The Dashcam app** (`dev.skramer.dashcam.player`), for watching recordings and turning recording on and off. The app and the recorder only talk through files (see [Files](#files)).
 
 A second service, `svc/watchdog.sh`, kills the recorder if it stops responding (see [Reverse](#reverse-and-the-camera-button)).
 
@@ -28,21 +28,16 @@ A second service, `svc/watchdog.sh`, kills the recorder if it stops responding (
 
 ### Settings
 
-Set in the app under **Settings**:
+The app has one setting: recording on or off (tap the status at the top of the main screen). Everything else is fixed, at what's been tested: 720×480 at 20 fps, 3 Mbit/s (about 1.35 GB an hour), one file a minute, and 5% of the drive kept free.
 
-| Setting | Choices | Default |
-|---|---|---|
-| Frame rate | 10, 15, 20, 30 fps | 15 fps |
-| Quality | 1–5 Mbit/s | 1.5 Mbit/s (about 0.7 GB per hour) |
-| File length | 1, 2, 5 minutes | 1 minute |
-| Keep free | 5, 10, 20% of the drive | 5% |
-
-Changing one of these restarts the recorder with the new values. Stopping and starting recording from the app takes effect without a restart.
-
-Less common options go in `/data/nemesis/apps/dashcam/dashcam.conf`, as arguments to the recorder (`DASHCAM_ARGS="--out=/storage/usb0/MyFolder"`). Updating the package replaces that file.
+To experiment, the recorder takes arguments in `/data/nemesis/apps/dashcam/dashcam.conf` (`DASHCAM_ARGS="--fps=15"`). Updating the package replaces that file.
 
 | Option | Default | |
 |---|---|---|
+| `--fps` | `20` | frames per second kept from the camera's 60; each costs a copy, so this sets the CPU load |
+| `--bitrate` | `3000000` | H.264 bits per second |
+| `--segment` | `60` | seconds per file |
+| `--min-free-percent` | `5` | the oldest files are deleted to keep this share of the drive free |
 | `--out` | `/storage/usb0/Dashcam` | where recordings go |
 | `--mount` | `/storage/usb0` | recording waits until this is mounted |
 | `--width`, `--height` | `720`, `480` | recording size; the camera hardware scales to it |
@@ -105,14 +100,14 @@ Only one program can have the camera at a time, and while the dashcam has it, th
 | `/data/nemesis/dashcam.log` | the recorder's log (rotated at 1 MB) |
 | `/data/nemesis/dashcam/status` | what the recorder is doing (recording, reversing, debug, reverse, caroff, off, nodrive, starting), for the app |
 | `/data/nemesis/dashcam/debug`, `debug-report.txt` | the debug session's state and recent log lines, and the recorder's part of a debug report, for the camera debug screen |
-| `/data/nemesis/dashcam/settings` | the recorder's copy of the app's settings |
+| `/data/nemesis/dashcam/settings` | the recorder's copy of the app's setting (recording on or off) |
 | `/data/nemesis/dashcam/heartbeat` | for the watchdog |
 | `/data/nemesis/dashcam/guidelines-hidden` | present while the recorder has the guide lines off |
-| `/data/data/dev.skramer.dashcam.player/files/recorder.conf` | the app's settings |
+| `/data/data/dev.skramer.dashcam.player/files/recorder.conf` | the app's setting: `enabled=true` or `false` |
 | `/data/data/dev.skramer.dashcam.player/files/debug` | the camera debug screen's request (camera, size, report), rewritten every half second while it's open |
 | `Dashcam/camera-debug-*.txt`, `.png` on the drive | debug reports and the picture at the time |
 
-**Updates:** a NEMESIS update uninstalls the app before installing the new one, which wipes the app's own files. The recorder keeps a copy of the settings outside the app, and the update keeps that copy, so settings survive. Recordings and names are on the drive, so they're never affected.
+**Updates:** a NEMESIS update uninstalls the app before installing the new one, which wipes the app's own files. The recorder keeps a copy of the on/off setting outside the app, and the update keeps that copy, so it survives. Recordings and names are on the drive, so they're never affected.
 
 **Uninstalling** stops the recorder, puts the guide lines back if needed, and deletes everything under `/data/nemesis/dashcam`. Recordings on the drive stay.
 
@@ -125,7 +120,7 @@ Only one program can have the camera at a time, and while the dashcam has it, th
 
 ## Camera debug
 
-**Camera debug**, at the top right of the app's Settings, is for working out why a car records blank video. While it's open, the recorder stops recording and runs a debug session instead: the camera and size chosen on the screen (whether or not recording is on, and without a drive), checked like recording frames but not encoded. It still hands the camera to the reverse view.
+**Camera debug** (long-press the drive space at the top right of the main screen) is for working out why a car records blank video. While it's open, the recorder stops recording and runs a debug session instead: the camera and size chosen on the screen (whether or not recording is on, and without a drive), checked like recording frames but not encoded. It still hands the camera to the reverse view.
 
 - **Picture:** the screen maps the camera's memory itself, read-only, and draws completed frames as they arrive (up to 30 a second) with OpenGL, mirrored back like recordings. Debug sessions turn the guide lines off too, so frames from the stock view's session are the ones with guide lines. Because it reads the memory directly, it also shows frames the stock reverse view's session writes.
 - **Log:** its own lines (`app`) and the recorder's (`rec`), timed to the millisecond: when frames start and stop arriving, when the picture appears or goes flat, the recorder's camera start, parameters, video signal and hand-offs. Press the camera button with the screen open, and the log shows whether the picture appeared before or after the recorder let go of the camera.

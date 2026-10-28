@@ -43,10 +43,16 @@ kill_recorder() {
 # The recorder turns the camera's guide lines off while recording, with a marker file saying so
 # (GuideLines.java). If it was killed meanwhile, turn them back on: IPgsService
 # .requestGuideLineState(2), transaction 0x21.
+# The parking service can drop a request that comes soon after another, so check
+# (getRvmGuideLineState, transaction 0x3b, reads 2 when on) and ask again.
 restore_guide_lines() {
     [ -f "$STATE/guidelines-hidden" ] || return 0
-    if service call com.hkmc.micom.pgs 33 i32 2 > /dev/null; then
-        rm -f "$STATE/guidelines-hidden"
-        log "turned the guide lines back on"
-    fi
+    for _try in 1 2 3 4; do
+        service call com.hkmc.micom.pgs 33 i32 2 > /dev/null
+        sleep 1
+        case "$(service call com.hkmc.micom.pgs 59)" in
+            *" 00000002 "*) rm -f "$STATE/guidelines-hidden"; log "turned the guide lines back on"; return 0 ;;
+        esac
+    done
+    log "WARN: couldn't turn the guide lines back on"
 }
