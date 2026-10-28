@@ -48,7 +48,7 @@ public final class Main {
      * capabilities. (A recorder started from an ADB shell already runs as system with the
      * shell's groups and is left as it is.)
      */
-    private static void dropRoot() throws Exception {
+    static void dropRoot() throws Exception {
         Object os = Class.forName("libcore.io.Libcore").getField("os").get(null);
         if ((Integer) os.getClass().getMethod("getuid").invoke(os) != 0) return;
         os.getClass().getMethod("setgid", int.class).invoke(os, SDCARD_R_GID);

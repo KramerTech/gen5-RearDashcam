@@ -209,6 +209,13 @@ button handoff, the recorder asks for restoration and waits for acknowledgement.
 Client I/O has a 500 ms timeout so an unavailable helper cannot block camera
 release indefinitely; the guard retains its 800 ms release deadline.
 
+On the first camera start after boot, `startPreview` returns before the kernel
+has turned the camera layer on (RDMA1 CTRL without its enable bit, then with a
+zero size), and the helper refuses a layer that's off. A refused request is
+retried in the background every 250 ms, for up to a minute, until it's granted or
+the camera is released. Recording never waits for it. On the NEEV23 unit the
+layer was ready about 10 seconds after boot; later starts succeed at once.
+
 Socket closure or recorder death also restores alpha. SIGTERM, SIGINT and SIGHUP
 ask the helper to restore and exit. Restoration preserves the current DMA enable
 bit and respects a camera-driver reset: it only restores the saved alpha when
@@ -233,6 +240,23 @@ and heartbeat once per second. Idle and passive recording keep the 250 ms gear
 interval. The stock-camera broadcast still releases immediately. Passive
 ownership is published before acknowledging release, preventing a duplicate
 handoff while cleanup finishes.
+
+## USB status-bar notices
+
+When a drive mounts, two notices show at the top of the screen while the media
+scanner reads it: SystemUI's "Reading USB" (tag `StorageNotification`) and the
+media scanner's own "No Supported Files" for a drive with no media (tag
+`MediaScannerService`), both id 0. The scan still runs; only the notices are
+taken down, with `INotificationManager.cancelNotificationWithTag`, which the
+system uid may call for any package.
+
+The recorder cancels both every 250 ms for a minute after it starts and after
+each mount; while the drive is out it checks for a mount on every 250 ms poll.
+At boot the drive mounts while Android is still starting, before the recorder
+(which waits for boot), so `recorder.sh` first starts `UsbNotices` in the
+background: it switches to the system uid, waits for the notification service,
+cancels both notices every 250 ms for a minute and exits. A notice can still
+flash briefly before it's cancelled.
 
 ## Wired projection testing without a USB drive
 

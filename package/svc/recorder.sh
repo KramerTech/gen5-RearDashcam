@@ -7,6 +7,8 @@ cd /data/nemesis/apps/dashcam || exit 1
 . ./dashcam.conf
 
 load_android_env || log "WARN: no framework environment; app_process may fail"
+# Before waiting for boot: a drive in at boot brings status-bar notices before the recorder is up.
+CLASSPATH=$HERE/dashcam.jar app_process /system/bin dev.skramer.dashcam.UsbNotices >> "$LOG" 2>&1 &
 wait_for_boot
 sleep 2  # don't spin if the recorder keeps failing at startup
 

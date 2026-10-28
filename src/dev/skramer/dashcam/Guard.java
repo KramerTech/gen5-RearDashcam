@@ -52,6 +52,7 @@ final class Guard extends Thread {
     /** After the last reverse or stock-camera signal, wait this long before taking the camera back. */
     private static final long SETTLE_MS = 3000;
     private static final long RELEASE_TIMEOUT_MS = 800;
+    private static final long STORAGE_NOTICE_MS = 60000;
     private static final long RETRY_MS = 5000;
     /** The ignition reading off this many polls in a row (about a second) means the car is off. */
     private static final int IGNITION_OFF_POLLS = 4;
@@ -66,6 +67,9 @@ final class Guard extends Thread {
     private final CameraDebug cameraDebug;
     private final NullRecording nullTest;
     private boolean driveMounted;
+    /** Until then (uptime ms), take down SystemUI's USB notice every state poll: a minute from startup or a mount, the scan's length. */
+    private long hideStorageUntil = SystemClock.uptimeMillis() + STORAGE_NOTICE_MS;
+    private boolean storageNoticeFailed;
     private volatile boolean nullRequested;
     private final Runnable startRecorder = new Runnable() {
         @Override
@@ -138,7 +142,15 @@ final class Guard extends Thread {
                 boolean carOff = carOff();
                 boolean blocked = now - lastBlockMs < SETTLE_MS;
                 if (beat % 4 == 0) checkAppSettings();
-                if (beat % 4 == 0 || nullRequested) driveMounted = storage.mounted();
+                if (beat % 4 == 0 || nullRequested || !driveMounted) {  // every poll while out, to catch a mount quickly
+                    boolean was = driveMounted;
+                    driveMounted = storage.mounted();
+                    if (driveMounted && !was) hideStorageUntil = now + STORAGE_NOTICE_MS;
+                }
+                if (now < hideStorageUntil && !Car.hideStorageNotification() && !storageNoticeFailed) {
+                    storageNoticeFailed = true;
+                    Log.w("can't take down the USB status-bar notice");
+                }
                 boolean requested = nullTest.requested(driveMounted);
                 if (requested != nullRequested) { nullRequested = requested; nextStart = 0; }
                 final CameraDebug.Request debug = cameraDebug.read();

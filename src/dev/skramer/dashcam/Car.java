@@ -39,6 +39,26 @@ final class Car {
         return call(PGS, PGS_IFACE, PGS_REQUEST_GUIDE_LINE_STATE, state) != null;
     }
 
+    /**
+     * Takes down the status-bar notices a USB drive brings while the media scanner reads it:
+     * SystemUI's "Reading USB" (tag "StorageNotification") and the scanner's own "No Supported
+     * Files" for a drive with no media (tag "MediaScannerService"), both id 0. The scan itself
+     * still runs. Allowed for the system uid, which the recorder runs as. False if a call failed.
+     */
+    static boolean hideStorageNotification() {
+        try {
+            Object nm = Class.forName("android.app.INotificationManager$Stub")
+                    .getMethod("asInterface", IBinder.class).invoke(null, ServiceManager.getService("notification"));
+            java.lang.reflect.Method cancel = nm.getClass()
+                    .getMethod("cancelNotificationWithTag", String.class, String.class, int.class, int.class);
+            cancel.invoke(nm, "com.android.systemui", "StorageNotification", 0, 0);
+            cancel.invoke(nm, "com.android.providers.media", "MediaScannerService", 0, 0);
+            return true;
+        } catch (Throwable t) {
+            return false;
+        }
+    }
+
     /** For the log: why the head unit is up. */
     static String describe() {
         return "ignition " + ignitionOn() + ", power status " + call(POWER, POWER_IFACE, POWER_GET_POWER_STATUS, null)
