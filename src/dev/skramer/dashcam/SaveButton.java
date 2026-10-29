@@ -1,5 +1,6 @@
 package dev.skramer.dashcam;
 
+import android.os.Build;
 import java.io.BufferedReader;
 import java.io.DataInputStream;
 import java.io.FileInputStream;
@@ -19,6 +20,8 @@ final class SaveButton extends Thread {
     /** struct input_event on 32-bit ARM: timeval (2 x 4 bytes), u16 type, u16 code, s32 value. */
     private static final int EVENT_SIZE = 16;
     private static final int EV_KEY = 1;
+    /** The head unit's key device: "daudio_" + its model. */
+    private static final String KEYS = "daudio_";
 
     private final DataInputStream in;
     private final int keyCode;
@@ -39,9 +42,14 @@ final class SaveButton extends Thread {
         String spec = config.saveButton;
         int colon = spec.lastIndexOf(':');
         if (colon <= 0) return null;
+        String name = spec.substring(0, colon);
+        boolean auto = name.equals("auto");
+        if (auto) name = KEYS + Build.DEVICE;
         try {
-            String path = findDevice(spec.substring(0, colon));
-            if (path == null) throw new IOException("no input device named " + spec.substring(0, colon));
+            String path = findDevice(name, false);
+            // Another firmware might name it differently; the head unit has one daudio_ key device.
+            if (path == null && auto) path = findDevice(KEYS, true);
+            if (path == null) throw new IOException("no input device named " + name);
             return new SaveButton(new FileInputStream(path), Integer.parseInt(spec.substring(colon + 1)), onSave);
         } catch (IOException | RuntimeException e) {
             Log.e("the steering wheel button won't save clips", e);
@@ -49,22 +57,30 @@ final class SaveButton extends Thread {
         }
     }
 
-    /** The /dev/input node for a device name, from /proc/bus/input/devices. */
-    private static String findDevice(String name) throws IOException {
-        String wanted = "N: Name=\"" + name + "\"";
+    /**
+     * The /dev/input node for a device name, from /proc/bus/input/devices. With prefix, for the one
+     * device whose name starts with it; null if there are none, or several.
+     */
+    private static String findDevice(String name, boolean prefix) throws IOException {
+        String wanted = "N: Name=\"" + name, found = null;
         boolean match = false;
+        int matches = 0;
         try (BufferedReader r = new BufferedReader(new FileReader("/proc/bus/input/devices"))) {
             for (String line; (line = r.readLine()) != null; ) {
                 if (line.startsWith("N: ")) {
-                    match = line.equals(wanted);
+                    match = prefix ? line.startsWith(wanted) : line.equals(wanted + "\"");
                 } else if (match && line.startsWith("H: Handlers=")) {
                     for (String h : line.substring(12).trim().split("\\s+")) {
-                        if (h.startsWith("event")) return "/dev/input/" + h;
+                        if (!h.startsWith("event")) continue;
+                        if (!prefix) return "/dev/input/" + h;
+                        found = "/dev/input/" + h;
+                        matches++;
+                        break;
                     }
                 }
             }
         }
-        return null;
+        return matches == 1 ? found : null;
     }
 
     @Override

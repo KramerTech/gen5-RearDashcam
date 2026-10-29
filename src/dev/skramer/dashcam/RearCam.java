@@ -37,7 +37,9 @@ final class RearCam {
      * check), the display stops reading the memory ring, the camera stops writing new frames and
      * the screen goes black.
      */
-    private static final String PARAMETERS = "crop-size=0x0;preview-overlay=140x0;preview-size=%dx%d;crop-position=0,0";
+    private static final String PARAMETERS = "crop-size=0x0;preview-overlay=%dx0;preview-size=%dx%d;crop-position=0,0";
+    /** The stock view's picture position, moved left for wider sizes so the picture fits the 1920-wide screen. */
+    private static final int OVERLAY_X = 140, SCREEN_WIDTH = 1920;
 
     private final Class<?> type;
     private final Object camera;
@@ -163,11 +165,47 @@ final class RearCam {
 
     /** Sets the parameters, without reading them first, and starts the direct-display path. */
     void start(int width, int height) throws Exception {
-        String p = String.format(java.util.Locale.US, PARAMETERS, width, height);
+        start(width, height, null);
+    }
+
+    /**
+     * halParams: TRUE to start from the HAL's own parameters, FALSE for ours, null for the default
+     * (the HAL's for any camera type but 0, analog, which is what's been tested with ours).
+     */
+    void start(int width, int height, Boolean halParams) throws Exception {
+        int x = Math.max(0, Math.min(OVERLAY_X, SCREEN_WIDTH - width));
+        String p = String.format(java.util.Locale.US, PARAMETERS, x, width, height);
+        if (halParams != null ? halParams : type() != 0) {
+            // As the stock view does on other camera types (the EV6's digital camera is 6): start
+            // from the HAL's own parameters and change only the picture's position and size.
+            String own = parameters();
+            Log.i("camera: the HAL's parameters: " + own);
+            if (own != null && !own.isEmpty()) {
+                p = with(with(own, "preview-overlay", x + "x0"), "preview-size", width + "x" + height);
+            }
+        }
         timed("native_setParameters(" + p + ")", "native_setParameters", new Class<?>[] {String.class}, p);
         previewing = true;
         timed("startPreview", "startPreview", new Class<?>[0]);
         overlay.hide(width, height);
+    }
+
+    /** A flattened "k=v;k=v" parameter string with key set to value, added if it isn't there. */
+    private static String with(String flat, String key, String value) {
+        StringBuilder b = new StringBuilder();
+        boolean found = false;
+        for (String kv : flat.split(";")) {
+            if (kv.isEmpty()) continue;
+            if (b.length() > 0) b.append(';');
+            if (kv.startsWith(key + "=")) {
+                b.append(key).append('=').append(value);
+                found = true;
+            } else {
+                b.append(kv);
+            }
+        }
+        if (!found) b.append(b.length() > 0 ? ";" : "").append(key).append('=').append(value);
+        return b.toString();
     }
 
     /** Calls a method of the camera, logging how long it took and what it returned or threw. */

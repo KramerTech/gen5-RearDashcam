@@ -59,6 +59,25 @@ final class Car {
         }
     }
 
+    /**
+     * IPgsService.requestRearCameraPowerOn(on): asks the car to power the rear camera on or off,
+     * as the stock reverse app can. An experiment for cars whose digital camera sends no video to
+     * our session (Camera Debug's power test). Called by name, not number, since it's meant for
+     * other models' firmware. False if the call failed.
+     */
+    static boolean setRearCameraPower(boolean on) {
+        try {
+            Object pgs = Class.forName(PGS_IFACE + "$Stub").getMethod("asInterface", IBinder.class)
+                    .invoke(null, ServiceManager.getService(PGS));
+            if (pgs == null) return false;
+            pgs.getClass().getMethod("requestRearCameraPowerOn", boolean.class).invoke(pgs, on);
+            return true;
+        } catch (Throwable t) {
+            Log.w("rear camera power " + (on ? "on" : "off") + " failed: " + t);
+            return false;
+        }
+    }
+
     /** For the log: why the head unit is up. */
     static String describe() {
         return "ignition " + ignitionOn() + ", power status " + call(POWER, POWER_IFACE, POWER_GET_POWER_STATUS, null)

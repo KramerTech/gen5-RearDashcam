@@ -44,7 +44,7 @@ To experiment, the recorder takes arguments in `/data/nemesis/apps/dashcam/dashc
 | `--width`, `--height` | `720`, `480` | recording size; the camera hardware scales to it |
 | `--mirror` | `true` | flip left to right |
 | `--hide-guide-lines` | `true` | turn the parking guide lines off while recording |
-| `--save-button` | `daudio_wp_daudioplus_neev23_us:37` | input device and key code for the save button; empty turns it off |
+| `--save-button` | `auto:37` | input device and key code for the save button; `auto` is the head unit's key device, `daudio_` plus its model; empty turns it off |
 | `--save-seconds` | `120` | how much the save button keeps |
 | `--swap-uv` | `false` | for a camera with red and blue swapped |
 
@@ -79,7 +79,7 @@ Only one program can have the camera at a time, and while the dashcam has it, th
 
 ## Saving from the steering wheel
 
-- The recorder reads the head unit's key device (`/dev/input/event1`, named `daudio_wp_daudioplus_neev23_us`) without grabbing it, so mute still works as usual. It opens the device while still root, since the system user can't.
+- The recorder reads the head unit's key device without grabbing it, so mute still works as usual. The device is named `daudio_` plus the head unit's model (`ro.product.device`): `daudio_wp_daudioplus_neev23_us`, `/dev/input/event1`, on the IONIQ 5. If no device has that name, the recorder uses the only `daudio_` device there is. Camera Debug reports list the input devices. It opens the device while still root, since the system user can't.
 - Mute is key 37. Four presses, each within 0.7 s of the last, trigger a save. Quick presses on this car come about 0.2 s apart and ordinary ones over a second apart.
 - On a save, the file being written ends at the next keyframe, under a second later, and recording carries on in a new file with nothing lost. Then every file last written to within the past two minutes moves to `Saved`. With 1-minute files that's 2 or 3 files, covering at least the two minutes before the press.
 - The saved recording is named "Saved from steering wheel", and the head unit shows a pop-up through the car's own toast message.

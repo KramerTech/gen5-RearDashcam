@@ -70,6 +70,10 @@ final class Guard extends Thread {
     /** Until then (uptime ms), take down SystemUI's USB notice every state poll: a minute from startup or a mount, the scan's length. */
     private long hideStorageUntil = SystemClock.uptimeMillis() + STORAGE_NOTICE_MS;
     private boolean storageNoticeFailed;
+    /** Camera Debug's power test: whether we've asked the car to power the rear camera on. */
+    private boolean cameraPowered;
+    /** Exists while the camera is powered on our request, so a later recorder turns it off. */
+    private final File powerMarker;
     private volatile boolean nullRequested;
     private final Runnable startRecorder = new Runnable() {
         @Override
@@ -103,6 +107,7 @@ final class Guard extends Thread {
         appConfLength = appConf.length();
         disabled = !config.enabled;
         cameraDebug = new CameraDebug(config);
+        powerMarker = new File(config.stateDir, "camera-power-test");
         nullTest = new NullRecording(config);
         gearStatus = gearMethod();
         setDaemon(true);
@@ -118,6 +123,11 @@ final class Guard extends Thread {
             Log.e("can't listen for the stock camera; the camera button won't work while recording", t);
         }
         if (disabled) Log.i("recording is turned off in the app");
+        if (powerMarker.exists()) {
+            Log.i("a camera power test was left on; turning the camera power request off");
+            Car.setRearCameraPower(false);
+            powerMarker.delete();
+        }
         boolean wasDebugging = false;
         long nextStart = 0;
         boolean mounted = true;
@@ -159,6 +169,21 @@ final class Guard extends Thread {
                     Log.i(debug != null ? "camera debug screen open" : "camera debug screen closed");
                     wasDebugging = debug != null;
                     if (debug == null) cameraDebug.end();
+                }
+                boolean wantPower = wantDebug && debug.power;
+                if (wantPower != cameraPowered) {
+                    // Release first, so the session reopens the camera after the request.
+                    if (recorder.isActive() && recorder.isDebug()) release("camera power test changed");
+                    nextStart = 0;
+                    cameraPowered = wantPower;
+                    boolean ok = Car.setRearCameraPower(wantPower);
+                    Log.i("camera power test: asked the car to power the rear camera " + (wantPower ? "on" : "off")
+                            + (ok ? "" : " (the call failed)"));
+                    try {
+                        if (wantPower) powerMarker.createNewFile(); else powerMarker.delete();
+                    } catch (IOException e) {
+                        Log.w("can't mark the power test: " + e);
+                    }
                 }
                 // The debug screen overrides recording being off.
                 boolean off = disabled && !wantDebug && !nullRequested;
@@ -205,7 +230,7 @@ final class Guard extends Thread {
                             main.post(new Runnable() {
                                 @Override
                                 public void run() {
-                                    recorder.startDebug(CameraDebug.camera(debug), debug.width, debug.height);
+                                    recorder.startDebug(CameraDebug.camera(debug), debug.width, debug.height, debug.halParams);
                                 }
                             });
                         } else {

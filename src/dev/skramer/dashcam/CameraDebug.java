@@ -43,10 +43,15 @@ final class CameraDebug {
         long seen = -1;
         /** The report it wants, by id; empty for none. */
         String report = "";
+        /** Experiment: ask the car to power the rear camera on for the session (Guard). */
+        boolean power;
+        /** Camera parameters: null for auto (RearCam.start), TRUE for the HAL's own, FALSE for ours. */
+        Boolean halParams;
 
         /** True if the recorder is running this request's session. */
         boolean matches(Recorder r) {
-            return (camera < 0 || camera == r.cameraId()) && (width + "x" + height).equals(r.size());
+            return (camera < 0 || camera == r.cameraId()) && (width + "x" + height).equals(r.size())
+                    && (halParams == null ? r.halParams() == null : halParams.equals(r.halParams()));
         }
     }
 
@@ -91,6 +96,8 @@ final class CameraDebug {
                             break;
                         case "seen": q.seen = Long.parseLong(v); break;
                         case "report": q.report = v; break;
+                        case "power": q.power = v.equals("1"); break;
+                        case "params": q.halParams = v.equals("hal") ? Boolean.TRUE : v.equals("ours") ? Boolean.FALSE : null; break;
                         default: break;
                     }
                 } catch (RuntimeException ignored) {
@@ -146,6 +153,9 @@ final class CameraDebug {
         section(b, "recorder", config + "\ncamera type " + type + "\n" + cameras + "\nstock view opens camera "
                 + RearCam.stockId() + "\nkernel " + firstLine("/proc/version"));
         section(b, "/proc/pmap", read("/proc/pmap"));
+        section(b, "device tree camera nodes (status, compatible)", cameraNodes());
+        section(b, "input devices (/proc/bus/input/devices names)",
+                filter(read("/proc/bus/input/devices"), Pattern.compile("^N: |^H: "), 200));
         section(b, "rear camera service", rearCameraDump());
         section(b, "getprop (camera, display and build lines)", filter(run("getprop"), PROP_KEEP, 400));
         section(b, "dmesg (camera lines)", filter(run("dmesg"), LOG_KEEP, 400));
@@ -157,6 +167,35 @@ final class CameraDebug {
         write(report, b.toString());
         reportDone = id;
         Log.i("debug report " + id + " written");
+    }
+
+    /** Device-tree nodes whose names mention a camera, sensor or deserializer, with status and compatible. */
+    private static String cameraNodes() {
+        StringBuilder b = new StringBuilder();
+        walk(new File("/proc/device-tree"), 0, b);
+        return b.length() > 0 ? b.toString() : "(none)\n";
+    }
+
+    private static void walk(File dir, int depth, StringBuilder b) {
+        File[] kids = dir.listFiles();
+        if (kids == null || depth > 4 || b.length() > 32 * 1024) return;
+        for (File k : kids) {
+            if (!k.isDirectory()) continue;
+            String n = k.getName().toLowerCase(java.util.Locale.US);
+            if (n.contains("cam") || n.contains("lvds") || n.contains("max9") || n.contains("tw99") || n.contains("vin")
+                    || n.contains("viqe") || n.contains("serdes") || n.contains("des")) {
+                b.append(k.getPath().substring("/proc/device-tree".length())).append(": status ")
+                        .append(prop(new File(k, "status"))).append(", compatible ").append(prop(new File(k, "compatible"))).append('\n');
+            }
+            walk(k, depth + 1, b);
+        }
+    }
+
+    /** A device-tree string property, NULs as commas; "-" if missing. */
+    private static String prop(File f) {
+        if (!f.isFile()) return "-";
+        String s = read(f.getPath()).trim();
+        return s.replace('\0', ',').replaceAll(",+$", "");
     }
 
     private static void section(StringBuilder b, String title, String body) {

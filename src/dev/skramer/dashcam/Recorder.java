@@ -66,6 +66,8 @@ final class Recorder {
     private final int ticksPerFrame;
     /** This session's size, set on start. */
     private int width, height, ySize, cSize;
+    /** For a debug session: RearCam.start's parameter choice. */
+    private volatile Boolean halParams;
     private byte[] i420;
 
     /** Mapped on first use, never unmapped. */
@@ -210,6 +212,7 @@ final class Recorder {
 
     void startNull() {
         nullRecording = true;
+        halParams = null;
         start(false, RearCam.stockId(), config.width, config.height);
     }
 
@@ -226,13 +229,20 @@ final class Recorder {
     /** Starts recording, from the camera the stock view would open. */
     void start() {
         nullRecording = false;
+        halParams = null;
         start(false, RearCam.stockId(), config.width, config.height);
     }
 
-    /** Starts a debug session: the camera and the feed, checked but not recorded. */
-    void startDebug(int cameraId, int width, int height) {
+    /** Starts a debug session: the camera and the feed, checked but not recorded. halParams as RearCam.start. */
+    void startDebug(int cameraId, int width, int height, Boolean halParams) {
         nullRecording = false;
+        this.halParams = halParams;
         start(true, cameraId, width, height);
+    }
+
+    /** The debug session's parameter choice (RearCam.start); null for the default. */
+    Boolean halParams() {
+        return halParams;
     }
 
     private void start(boolean debug, int cameraId, int width, int height) {
@@ -298,7 +308,7 @@ final class Recorder {
             }
         });
         feed = new Feed(width, height, false);
-        camera.start(width, height);
+        camera.start(width, height, halParams);
         skipUntilNs = hidLines ? System.nanoTime() + GUIDE_LINES_SETTLE_NS : 0;
         Log.i("camera started");
         if (hidLines) {

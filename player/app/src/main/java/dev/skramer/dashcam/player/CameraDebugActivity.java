@@ -23,6 +23,7 @@ import android.widget.ListView;
 import android.widget.TextView;
 import java.io.BufferedReader;
 import java.io.File;
+import java.io.FileInputStream;
 import java.io.FileOutputStream;
 import java.io.FileReader;
 import java.io.IOException;
@@ -31,6 +32,7 @@ import java.text.SimpleDateFormat;
 import java.util.ArrayList;
 import java.util.Date;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Locale;
 
 /**
@@ -52,7 +54,8 @@ import java.util.Locale;
 public final class CameraDebugActivity extends Activity {
     private static final String REGION = "rearcamera", VIQE = "rearcamera_viqe";
     private static final File RECORDER = new File("/data/nemesis/dashcam");
-    private static final String[] SIZES = {"720x480", "1140x720", "1280x480", "1920x720"};
+    /** 1140x720 and 1780x720 are the stock view's sizes for analog cameras and for camera type 6 (the EV6's). */
+    private static final String[] SIZES = {"720x480", "1140x720", "1280x480", "1780x720", "1920x720"};
     private static final String[] CAMERAS = {"auto", "0", "3"};
     private static final long POLL_MS = 500;
     /** Stop asking for the camera once the screen has been out of sight this long. */
@@ -72,6 +75,8 @@ public final class CameraDebugActivity extends Activity {
     private Button reportButton;
     private Button nullRecordingToggle;
     private boolean nullRecordingOn, leaseSuspended;
+    /** Experiment: the recorder asks the car to power the rear camera on while this is set. */
+    private boolean powerTest;
     /** The last frame drawn, for the report's picture. */
     private volatile byte[] latest;
     private volatile int latestW, latestH;
@@ -93,6 +98,13 @@ public final class CameraDebugActivity extends Activity {
     private volatile int viewW = 720, viewH = 480;
     /** Flip it left to right, as the recorder does (its mirror setting; on unless it says otherwise). */
     private volatile boolean mirror = true;
+    /** For the auto test: frames the viewer has seen completed, and its last picture verdict. */
+    private volatile long framesSeen;
+    private volatile String pictureKind = "";
+    /** Camera parameters to ask for: "auto", "hal" or "ours" (CameraDebug.Request.halParams). */
+    private volatile String params = "auto";
+    private Button autoButton, powerButton;
+    private volatile boolean autoRunning;
     private Thread viewer, scanner;
     private final Object scanLock = new Object();
     private boolean scanWanted;
@@ -236,6 +248,29 @@ public final class CameraDebugActivity extends Activity {
             }
         });
         bar.addView(nullRecordingToggle, barButton());
+        final Button power = powerButton = new Button(this);
+        power.setText("Power test: off");
+        power.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                if (autoRunning) return;
+                powerTest = !powerTest;
+                power.setText(powerTest ? "Power test: ON" : "Power test: off");
+                log(powerTest ? "power test on: the recorder asks the car to power the rear camera on, then reopens it"
+                        : "power test off: the recorder asks the car to power the rear camera off");
+                writeRequest();
+            }
+        });
+        bar.addView(power, barButton());
+        autoButton = new Button(this);
+        autoButton.setText("Auto Test");
+        autoButton.setOnClickListener(new View.OnClickListener() {
+            @Override
+            public void onClick(View v) {
+                startAutoTest();
+            }
+        });
+        bar.addView(autoButton, barButton());
         bar.addView(scan, barButton());
         bar.addView(reportButton, barButton());
         root.addView(bar, new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT, px(72)));
@@ -319,8 +354,10 @@ public final class CameraDebugActivity extends Activity {
             b.setOnClickListener(new View.OnClickListener() {
                 @Override
                 public void onClick(View view) {
+                    if (autoRunning) return;
                     if (label.equals("Camera")) camera = v;
                     else size = v;
+                    params = "auto";
                     log("asking the recorder for camera " + camera + " at " + size);
                     updatePicks();
                     writeRequest();
@@ -340,6 +377,86 @@ public final class CameraDebugActivity extends Activity {
                 if (v.getTag() != null) v.setActivated(v.getTag().equals(row == cameraRow ? camera : size));
             }
         }
+    }
+
+    // ---- auto test
+
+    /** One setup the auto test tries: camera, size, parameters ("hal"/"ours"), power test. */
+    private static final String[][] AUTO_STEPS = {
+        {"auto", "1780x720", "hal", "0"},
+        {"auto", "1780x720", "ours", "0"},
+        {"auto", "1710x720", "hal", "0"},
+        {"auto", "1140x720", "hal", "0"},
+        {"auto", "1920x720", "hal", "0"},
+        {"auto", "1280x720", "hal", "0"},
+        {"auto", "720x480", "hal", "0"},
+        {"auto", "720x480", "ours", "0"},
+        {"3", "1780x720", "hal", "0"},
+        {"auto", "1780x720", "hal", "1"},
+    };
+    private static final long AUTO_SETTLE_MS = 5000, AUTO_WATCH_MS = 10000;
+
+    /**
+     * Tries each of AUTO_STEPS for AUTO_WATCH_MS (after AUTO_SETTLE_MS for the recorder to reopen
+     * the camera), logs how many frames arrived and what they looked like, then saves a report:
+     * one press for a tester instead of a round trip per setup.
+     */
+    private void startAutoTest() {
+        if (autoRunning || nullRecordingOn) return;
+        autoRunning = true;
+        autoButton.setEnabled(false);
+        autoButton.setText("Testing…");
+        log("auto test: " + AUTO_STEPS.length + " setups, about " + AUTO_STEPS.length * (AUTO_SETTLE_MS + AUTO_WATCH_MS) / 1000
+                + " s; don't touch the screen or shift out of park until the report is saved");
+        new Thread("auto test") {
+            @Override
+            public void run() {
+                StringBuilder summary = new StringBuilder("auto test results:");
+                for (int i = 0; i < AUTO_STEPS.length && running && stoppedAt == 0; i++) {
+                    final String[] s = AUTO_STEPS[i];
+                    final String what = "camera " + s[0] + " at " + s[1] + ", " + s[2] + " parameters" + (s[3].equals("1") ? ", power test on" : "");
+                    ui.post(new Runnable() {
+                        @Override
+                        public void run() {
+                            camera = s[0];
+                            size = s[1];
+                            params = s[2];
+                            powerTest = s[3].equals("1");
+                            powerButton.setText(powerTest ? "Power test: ON" : "Power test: off");
+                            updatePicks();
+                            writeRequest();
+                        }
+                    });
+                    log("auto test " + (i + 1) + "/" + AUTO_STEPS.length + ": " + what);
+                    SystemClock.sleep(AUTO_SETTLE_MS);
+                    long f0 = framesSeen;
+                    SystemClock.sleep(AUTO_WATCH_MS);
+                    long frames = framesSeen - f0;
+                    String r = String.format(Locale.US, "%s: %d frames in %d s (%.1f/s), picture %s", what, frames,
+                            AUTO_WATCH_MS / 1000, frames * 1000f / AUTO_WATCH_MS, pictureKind);
+                    log("auto test " + (i + 1) + " result: " + r);
+                    summary.append("\n  ").append(i + 1).append(". ").append(r);
+                }
+                final String done = summary.toString();
+                ui.post(new Runnable() {
+                    @Override
+                    public void run() {
+                        for (String line : done.split("\n")) log(line);
+                        camera = "auto";
+                        size = SIZES[0];
+                        params = "auto";
+                        powerTest = false;
+                        powerButton.setText("Power test: off");
+                        updatePicks();
+                        writeRequest();
+                        autoRunning = false;
+                        autoButton.setEnabled(true);
+                        autoButton.setText("Auto Test");
+                        askReport();
+                    }
+                });
+            }
+        }.start();
     }
 
     // ---- talking to the recorder
@@ -386,7 +503,8 @@ public final class CameraDebugActivity extends Activity {
         if (leaseSuspended) return;
         File dir = getFilesDir();
         File tmp = new File(dir, RecorderLink.DEBUG + ".tmp");
-        String text = "camera=" + camera + "\nsize=" + size + "\nseen=" + seen + "\nreport=" + report + "\n";
+        String text = "camera=" + camera + "\nsize=" + size + "\nseen=" + seen + "\nreport=" + report
+                + "\npower=" + (powerTest ? 1 : 0) + "\nparams=" + params + "\n";
         try (FileOutputStream out = new FileOutputStream(tmp)) {
             out.write(text.getBytes(StandardCharsets.US_ASCII));
         } catch (IOException e) {
@@ -573,6 +691,45 @@ public final class CameraDebugActivity extends Activity {
                 log("can't save the picture: " + e);
             }
         }
+        final File firmware = new File(dir, "firmware-" + Build.PRODUCT + "-" + Build.TIME / 1000);
+        new Thread("firmware copy") {
+            @Override
+            public void run() {
+                copyFirmware(firmware);
+            }
+        }.start();
+    }
+
+    /**
+     * Copies this firmware's stock camera app code and the framework it's compiled against (the
+     * BOOTCLASSPATH odex files, about 40 MB), so its camera setup can be read for another car's
+     * firmware. Files under /system are readable by any app. Done once per firmware: a file
+     * already there at the same size is skipped.
+     */
+    private void copyFirmware(File to) {
+        List<File> files = new ArrayList<>();
+        files.add(new File("/system/app/HKMC_RearCamera.odex"));
+        String bcp = System.getenv("BOOTCLASSPATH");
+        for (String jar : bcp == null ? new String[0] : bcp.split(":")) {
+            if (jar.endsWith(".jar")) files.add(new File(jar.substring(0, jar.length() - 4) + ".odex"));
+        }
+        if (!to.isDirectory() && !to.mkdirs()) {
+            log("can't make " + to);
+            return;
+        }
+        int copied = 0;
+        byte[] buf = new byte[1 << 16];
+        for (File f : files) {
+            File dst = new File(to, f.getName());
+            if (!f.isFile() || dst.length() == f.length()) continue;
+            try (FileInputStream in = new FileInputStream(f); FileOutputStream out = new FileOutputStream(dst)) {
+                for (int n; (n = in.read(buf)) > 0; ) out.write(buf, 0, n);
+                copied++;
+            } catch (IOException e) {
+                log("can't copy " + f + ": " + e);
+            }
+        }
+        if (copied > 0) log("firmware files copied to " + to + " (" + copied + " files); send that folder along with the report");
     }
 
     private String appVersion() {
@@ -690,6 +847,7 @@ public final class CameraDebugActivity extends Activity {
                         if (writing >= 0) {
                             completed = writing;
                             completions++;
+                            framesSeen++;
                         }
                         writing = slot;
                     } else if (count > 1) {
@@ -720,6 +878,7 @@ public final class CameraDebugActivity extends Activity {
                         log("picture: " + v[1]);
                         kind = v[0];
                     }
+                    pictureKind = v[1];
                     picture.post(frame, w, h, mirror);
                     latest = frame;
                     latestW = w;

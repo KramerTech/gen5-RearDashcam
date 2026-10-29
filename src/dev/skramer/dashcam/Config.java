@@ -37,9 +37,10 @@ final class Config implements Cloneable {
     boolean hideGuideLines = true;
     /**
      * "Input device name:key code" of the button that saves the last saveSeconds when pressed
-     * four times quickly (the steering wheel's mute); empty turns it off.
+     * four times quickly (the steering wheel's mute); empty turns it off. "auto" is the head
+     * unit's own key device, named daudio_ plus its model (daudio_wp_daudioplus_neev23_us).
      */
-    String saveButton = "daudio_wp_daudioplus_neev23_us:37";
+    String saveButton = "auto:37";
     int saveSeconds = 120;
     /** Recording turned on in the app. */
     boolean enabled = true;
