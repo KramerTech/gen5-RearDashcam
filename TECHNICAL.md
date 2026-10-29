@@ -131,8 +131,16 @@ Only one program can have the camera at a time, and while the dashcam has it, th
 - **Log:** its own lines (`app`) and the recorder's (`rec`), timed to the millisecond: when frames start and stop arriving, when the picture appears or goes flat, the recorder's camera start, parameters, video signal and hand-offs. Press the camera button with the screen open, and the log shows whether the picture appeared before or after the recorder let go of the camera.
 - **Scan RAM** (also run when the screen opens and whenever frames start or stop) samples every 16 KiB of `rearcamera` and `rearcamera_viqe` for a second. It lists which ranges change and what they hold, and guesses the frame size from how far the changing part reaches.
 - **Save Report** writes `Dashcam/camera-debug-<time>.txt` and a `.png` of the picture. The text holds the log, the last scan, the camera list, `/proc/pmap`, the rear camera service's dump, camera-related lines from `getprop`, `dmesg` and the recorder's logcat, and the recorder's recent log. The recorder runs as the system user, so its logcat includes the stock camera app's lines but not mediaserver's.
+- **Auto Test** tries nine setups for 10 s each (after 5 s for the camera to reopen): sizes 720×480 to 1920×720 including the stock view's 1140×720, 1710×720 and 1780×720, camera 3, and both parameter styles (ours, or the HAL's own with only the position and size changed, as the stock view does). It logs how many frames reached RAM for each, then saves a report on its own.
+- Reports also list the device-tree camera, deserializer and video-input nodes with their status, and the input devices.
 - Closing the screen ends the preview session; normal recording resumes when eligible. The explicit null-test request continues independently after leaving the page.
 - After a minute out of sight, the screen closes itself.
+
+## Cars it can't record
+
+The HAL reports a camera type (`RearCamera.getCameraType()`). The analog camera this was built on is type 0. Cars with a 360° (surround view) camera, such as the IONIQ 5 Limited, and the EV6 tested so far report type 6, a digital (LVDS) camera behind a deserializer (`tcc_camera/max96706_lvds` in the device tree). There, a direct-display session opens and reports a video signal, but the hardware writes only a few frames of dark gray and stops, at every size and with either parameter style. Frames reach the same RAM only while the car itself shows a camera view: about 60 ms after the camera button, even with our session still open. The button goes to the parking controller, which switches the video on and tells the head unit over CAN. No head-unit request found so far starts it (the parking service's rear-camera power request made no difference).
+
+So the installer's `preinstall` hook (`scripts/preinstall.sh`) asks the HAL for the camera type, through `CameraCheck` in the staged `dashcam.jar`, and refuses type 6 with a toast. If it can't get an answer, it installs anyway; then the recorder checks the type itself when it starts, doesn't record on type 6 (Camera Debug still runs), and reports the state `unsupported`, which the Dashcam app explains on its main screen. On an update, NEMESIS runs the old package's `preuninstall` before this hook, so a refused update leaves the dashcam uninstalled.
 
 ## Projection and the camera display layer
 

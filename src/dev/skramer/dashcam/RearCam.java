@@ -169,15 +169,14 @@ final class RearCam {
     }
 
     /**
-     * halParams: TRUE to start from the HAL's own parameters, FALSE for ours, null for the default
-     * (the HAL's for any camera type but 0, analog, which is what's been tested with ours).
+     * halParams: TRUE to start from the HAL's own parameters and change only the position and size,
+     * as the stock view does; FALSE or null for ours, which is what recording uses. (Camera Debug's
+     * Auto Test tries both; on the digital cameras it was tried for, they made no difference.)
      */
     void start(int width, int height, Boolean halParams) throws Exception {
         int x = Math.max(0, Math.min(OVERLAY_X, SCREEN_WIDTH - width));
         String p = String.format(java.util.Locale.US, PARAMETERS, x, width, height);
-        if (halParams != null ? halParams : type() != 0) {
-            // As the stock view does on other camera types (the EV6's digital camera is 6): start
-            // from the HAL's own parameters and change only the picture's position and size.
+        if (Boolean.TRUE.equals(halParams)) {
             String own = parameters();
             Log.i("camera: the HAL's parameters: " + own);
             if (own != null && !own.isEmpty()) {

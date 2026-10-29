@@ -53,6 +53,7 @@ final class Guard extends Thread {
     private static final long SETTLE_MS = 3000;
     private static final long RELEASE_TIMEOUT_MS = 800;
     private static final long STORAGE_NOTICE_MS = 60000;
+    private static final int UNSUPPORTED_CAMERA_TYPE = 6;
     private static final long RETRY_MS = 5000;
     /** The ignition reading off this many polls in a row (about a second) means the car is off. */
     private static final int IGNITION_OFF_POLLS = 4;
@@ -70,10 +71,6 @@ final class Guard extends Thread {
     /** Until then (uptime ms), take down SystemUI's USB notice every state poll: a minute from startup or a mount, the scan's length. */
     private long hideStorageUntil = SystemClock.uptimeMillis() + STORAGE_NOTICE_MS;
     private boolean storageNoticeFailed;
-    /** Camera Debug's power test: whether we've asked the car to power the rear camera on. */
-    private boolean cameraPowered;
-    /** Exists while the camera is powered on our request, so a later recorder turns it off. */
-    private final File powerMarker;
     private volatile boolean nullRequested;
     private final Runnable startRecorder = new Runnable() {
         @Override
@@ -107,7 +104,6 @@ final class Guard extends Thread {
         appConfLength = appConf.length();
         disabled = !config.enabled;
         cameraDebug = new CameraDebug(config);
-        powerMarker = new File(config.stateDir, "camera-power-test");
         nullTest = new NullRecording(config);
         gearStatus = gearMethod();
         setDaemon(true);
@@ -123,11 +119,11 @@ final class Guard extends Thread {
             Log.e("can't listen for the stock camera; the camera button won't work while recording", t);
         }
         if (disabled) Log.i("recording is turned off in the app");
-        if (powerMarker.exists()) {
-            Log.i("a camera power test was left on; turning the camera power request off");
-            Car.setRearCameraPower(false);
-            powerMarker.delete();
-        }
+        // Camera type 6 (360-view cars' digital camera) sends video only while the car shows its own
+        // camera view. The installer refuses these cars; this is in case its check couldn't tell.
+        // Camera Debug still runs there.
+        final boolean unsupported = RearCam.type() == UNSUPPORTED_CAMERA_TYPE;
+        if (unsupported) Log.w("camera type " + UNSUPPORTED_CAMERA_TYPE + " isn't supported (360 view cars); not recording");
         boolean wasDebugging = false;
         long nextStart = 0;
         boolean mounted = true;
@@ -170,23 +166,9 @@ final class Guard extends Thread {
                     wasDebugging = debug != null;
                     if (debug == null) cameraDebug.end();
                 }
-                boolean wantPower = wantDebug && debug.power;
-                if (wantPower != cameraPowered) {
-                    // Release first, so the session reopens the camera after the request.
-                    if (recorder.isActive() && recorder.isDebug()) release("camera power test changed");
-                    nextStart = 0;
-                    cameraPowered = wantPower;
-                    boolean ok = Car.setRearCameraPower(wantPower);
-                    Log.i("camera power test: asked the car to power the rear camera " + (wantPower ? "on" : "off")
-                            + (ok ? "" : " (the call failed)"));
-                    try {
-                        if (wantPower) powerMarker.createNewFile(); else powerMarker.delete();
-                    } catch (IOException e) {
-                        Log.w("can't mark the power test: " + e);
-                    }
-                }
                 // The debug screen overrides recording being off.
-                boolean off = disabled && !wantDebug && !nullRequested;
+                boolean off = !wantDebug && (unsupported || disabled && !nullRequested);
+                String offState = unsupported && !wantDebug ? "unsupported" : "off";
                 String state;
                 if (recorder.isActive()) {
                     if (carOff) {
@@ -208,13 +190,13 @@ final class Guard extends Thread {
                             main.post(takeBack);
                         }
                     }
-                    state = !recorder.isActive() ? (carOff ? "caroff" : off ? "off" : blocked ? "reverse" : "starting")
+                    state = !recorder.isActive() ? (carOff ? "caroff" : off ? offState : blocked ? "reverse" : "starting")
                             : recorder.isDebug() ? "debug" : recorder.isPassive() ? "reversing"
                             : recorder.isNullRecording() ? "recording-null" : "recording";
                 } else if (carOff) {
                     state = "caroff";
                 } else if (off) {
-                    state = "off";
+                    state = offState;
                 } else if (blocked) {
                     state = "reverse";
                 } else {
@@ -402,7 +384,7 @@ final class Guard extends Thread {
     /**
      * What the player app shows: "recording", "reversing" (recording the reverse view's frames),
      * "debug" (a camera debug session), "reverse" (the camera is with the reverse view),
-     * "caroff" (ignition off), "off", "nodrive" or "starting", and since when. Written only when
+     * "caroff" (ignition off), "off", "unsupported" (camera type 6), "nodrive" or "starting", and since when. Written only when
      * it changes, readable by any app. The heartbeat's age says whether the recorder is running.
      */
     private void writeStatus(String state) {

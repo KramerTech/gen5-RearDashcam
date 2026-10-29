@@ -43,9 +43,7 @@ final class CameraDebug {
         long seen = -1;
         /** The report it wants, by id; empty for none. */
         String report = "";
-        /** Experiment: ask the car to power the rear camera on for the session (Guard). */
-        boolean power;
-        /** Camera parameters: null for auto (RearCam.start), TRUE for the HAL's own, FALSE for ours. */
+        /** Camera parameters: null for the default (RearCam.start), TRUE for the HAL's own, FALSE for ours. */
         Boolean halParams;
 
         /** True if the recorder is running this request's session. */
@@ -96,7 +94,6 @@ final class CameraDebug {
                             break;
                         case "seen": q.seen = Long.parseLong(v); break;
                         case "report": q.report = v; break;
-                        case "power": q.power = v.equals("1"); break;
                         case "params": q.halParams = v.equals("hal") ? Boolean.TRUE : v.equals("ours") ? Boolean.FALSE : null; break;
                         default: break;
                     }

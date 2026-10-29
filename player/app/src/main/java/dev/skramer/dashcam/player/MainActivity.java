@@ -255,6 +255,10 @@ public final class MainActivity extends Activity {
                     color = 0xFF5B6470;
                     text = "Recording is off";
                     break;
+                case "unsupported":
+                    color = 0xFF5B6470;
+                    text = "Camera system not supported (360 view cars can't be recorded)";
+                    break;
                 case "caroff":
                     color = 0xFF5B6470;
                     text = "Waiting for the car to be on";
@@ -280,7 +284,7 @@ public final class MainActivity extends Activity {
         statusDot.setColorFilter(color);
         statusText.setText(text);
         statusToggle.setActivated(false);
-        statusToggle.setEnabled(rec.running && pendingCommand == null);
+        statusToggle.setEnabled(rec.running && pendingCommand == null && !"unsupported".equals(rec.state));
 
         boolean hasDrive = space != null;
         savedButton.setEnabled(hasDrive);

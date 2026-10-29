@@ -3,6 +3,7 @@ version=@VERSION@
 id=dashcam
 name=Rear Dashcam
 types=application,service
+preinstall=scripts/preinstall.sh
 preuninstall=scripts/preun.sh
 
 [app.0]
