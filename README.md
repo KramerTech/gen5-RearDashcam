@@ -5,7 +5,7 @@ Turns your backup camera into a dashcam for Hyundai, Kia and Genesis cars with t
 > [!IMPORTANT]
 > **Cars with a 360° (surround view) camera aren't supported.** On those cars the camera only sends a picture while the car is showing its own camera view, so there's nothing to record the rest of the time. The installer checks your car's camera and refuses to install if it won't work, with a "camera system not supported" message.
 >
-> **Works on:** cars with a plain backup camera (no 360° view). Tested on an IONIQ 5 (non-Limited).
+> **Works on:** cars with a plain backup camera (no 360° view). Tested on an IONIQ 5 SEL.
 >
 > **Doesn't work on:** IONIQ 5 Limited, EV6 GT-Line, and other cars trims with 360° views.
 
