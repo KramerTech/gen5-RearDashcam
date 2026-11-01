@@ -29,7 +29,10 @@ Turns your backup camera into a dashcam for Hyundai, Kia and Genesis cars with t
 
 You need [NEMESIS](https://github.com/xwtk/hmg_nemesis) on the head unit, and a USB drive formatted as FAT32 or exFAT. A 64 GB drive holds about 85 hours of driving.
 
-Download the latest release from the [releases page](https://github.com/KramerTech/gen5-RearDashcam/releases/latest).
+> **Install [gen5-codec-patch](https://github.com/KramerTech/gen5-codec-patch) first.** The dashcam depends on its `media.codecs` package, version 2.0 or newer, which is required for on-device video playback: without it, the Dashcam app can't play recordings on the car's screen. The install checks for it and refuses to proceed if it's missing.
+
+1. Install `media.codecs` 2.0+ from [gen5-codec-patch releases](https://github.com/KramerTech/gen5-codec-patch/releases) first.
+2. Download the latest dashcam release from the [releases page](https://github.com/KramerTech/gen5-RearDashcam/releases/latest) and install it from a USB drive or over ADB:
 
 **From a USB drive:** unzip `dashcam-<version>-usb.zip` onto an empty USB drive. Plug it in once the head unit has fully started, and confirm the install. You can keep recording to that same drive afterwards.
 

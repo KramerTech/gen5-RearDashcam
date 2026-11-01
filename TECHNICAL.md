@@ -119,6 +119,7 @@ Only one program can have the camera at a time, and while the dashcam has it, th
 ## The Dashcam app
 
 - Plays a whole hour as one continuous timeline with Media3 ExoPlayer, which steps frame by frame and plays at 0.5× to 8×.
+- Playback needs the Video Codec Fix package (`media.codecs` 2.0+, from [gen5-codec-patch](https://github.com/KramerTech/gen5-codec-patch)). The firmware's codec list names decoders that can't be created, so without it ExoPlayer's decoder query fails and nothing plays. The installer's `preinstall` hook reads the installed version from `/data/nemesis/apps/media.codecs/NEMESIS.data` and refuses with a toast if it's missing or older; this check comes before the camera-type check below.
 - Snapshot saves the frame as shown, zoom included.
 - Like the stock apps, it follows the car's driving restriction (`com.hkmc.regulation`) and only works in Park.
 - Renaming uses a keyboard built into the app, the same one as the Tilepad launcher's.
@@ -140,7 +141,7 @@ Only one program can have the camera at a time, and while the dashcam has it, th
 
 The HAL reports a camera type (`RearCamera.getCameraType()`). The analog camera this was built on is type 0. Cars with a 360° (surround view) camera, such as the IONIQ 5 Limited, and the EV6 tested so far report type 6, a digital (LVDS) camera behind a deserializer (`tcc_camera/max96706_lvds` in the device tree). There, a direct-display session opens and reports a video signal, but the hardware writes only a few frames of dark gray and stops, at every size and with either parameter style. Frames reach the same RAM only while the car itself shows a camera view: about 60 ms after the camera button, even with our session still open. The button goes to the parking controller, which switches the video on and tells the head unit over CAN. No head-unit request found so far starts it (the parking service's rear-camera power request made no difference).
 
-So the installer's `preinstall` hook (`scripts/preinstall.sh`) asks the HAL for the camera type, through `CameraCheck` in the staged `dashcam.jar`, and refuses type 6 with a toast. If it can't get an answer, it installs anyway; then the recorder checks the type itself when it starts, doesn't record on type 6 (Camera Debug still runs), and reports the state `unsupported`, which the Dashcam app explains on its main screen. On an update, NEMESIS runs the old package's `preuninstall` before this hook, so a refused update leaves the dashcam uninstalled.
+So the installer's `preinstall` hook (`scripts/preinstall.sh`), after checking for the codec package (see [The Dashcam app](#the-dashcam-app)), asks the HAL for the camera type, through `CameraCheck` in the staged `dashcam.jar`, and refuses type 6 with a toast. If it can't get an answer, it installs anyway; then the recorder checks the type itself when it starts, doesn't record on type 6 (Camera Debug still runs), and reports the state `unsupported`, which the Dashcam app explains on its main screen. On an update, NEMESIS runs the old package's `preuninstall` before this hook, so a refused update leaves the dashcam uninstalled.
 
 ## Projection and the camera display layer
 
