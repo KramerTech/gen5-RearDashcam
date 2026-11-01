@@ -1,8 +1,13 @@
 [nemesis]
-version=@VERSION@
+version=1.1
 id=dashcam
 name=Rear Dashcam
-types=application,service
+type=application,service
+package-version=@VERSION@
+short-desc=Records the backup camera to a USB drive while driving
+depends=media.codecs@>=2.1
+os=NEEV23.*
+models=neev*
 preinstall=scripts/preinstall.sh
 preuninstall=scripts/preun.sh
 

@@ -1,13 +1,11 @@
 # Rear Dashcam for Gen5W head units (Without 360 View)
 
-Turns your backup camera into a dashcam for Hyundai, Kia and Genesis cars with the Gen5W head unit. It records to a USB drive whenever the car is on, and a **Dashcam** app lets you watch the recordings on the car's screen.
+Turns your backup camera into a dashcam for the Hyundai IONIQ 5 with the Gen5W head unit. It records to a USB drive whenever the car is on, and a **Dashcam** app lets you watch the recordings on the car's screen.
 
 > [!IMPORTANT]
-> **Cars with a 360° (surround view) camera aren't supported.** On those cars the camera only sends a picture while the car is showing its own camera view, so there's nothing to record the rest of the time. The installer checks your car's camera and refuses to install if it won't work, with a "camera system not supported" message.
+> **Only the IONIQ 5 SE and SEL are supported** (a plain backup camera, no 360° view). It's been tested on an IONIQ 5 SEL. The installer refuses other models with an "only supported on the Hyundai IONIQ 5" message.
 >
-> **Works on:** cars with a plain backup camera (no 360° view). Tested on an IONIQ 5 SEL.
->
-> **Doesn't work on:** IONIQ 5 Limited, EV6 GT-Line, and other cars trims with 360° views.
+> **Cars with a 360° (surround view) camera aren't supported**, including the IONIQ 5 Limited and the EV6 GT-Line. On those cars the camera only sends a picture while the car is showing its own camera view, so there's nothing to record the rest of the time. The installer checks your car's camera and refuses to install if it won't work, with a "camera system not supported" message.
 
 > [!CAUTION]
 > **Experimental software. It may brick your head unit, and it comes with no warranty of any kind.** It runs with root access, takes over your backup camera, and changes the head unit's display hardware settings while it records. It's a personal hobby project, not made or approved by Hyundai, Kia or Genesis, and it has only been tested on a few cars. Installing it can void your warranty, and if anything goes wrong (a frozen screen, a backup camera that won't come up, a head unit that won't start) that's yours to fix. Use it at your own risk.
@@ -27,11 +25,11 @@ Turns your backup camera into a dashcam for Hyundai, Kia and Genesis cars with t
 
 ## Install
 
-You need [NEMESIS](https://github.com/xwtk/hmg_nemesis) on the head unit, and a USB drive formatted as FAT32 or exFAT. A 64 GB drive holds about 85 hours of driving.
+You need [NEMESIS](https://github.com/xwtk/hmg_nemesis) 1.16 or newer on the head unit, and a USB drive formatted as FAT32 or exFAT. A 64 GB drive holds about 85 hours of driving.
 
-> **Install [gen5-codec-patch](https://github.com/KramerTech/gen5-codec-patch) first.** The dashcam depends on its `media.codecs` package, version 2.0 or newer, which is required for on-device video playback: without it, the Dashcam app can't play recordings on the car's screen. The install checks for it and refuses to proceed if it's missing.
+> **Install [gen5-codec-patch](https://github.com/KramerTech/gen5-codec-patch) first.** The dashcam depends on its `media.codecs` package, version 2.1 or newer, which is required for on-device video playback: without it, the Dashcam app can't play recordings on the car's screen. NEMESIS checks for it and warns before installing the dashcam without it.
 
-1. Install `media.codecs` 2.0+ from [gen5-codec-patch releases](https://github.com/KramerTech/gen5-codec-patch/releases) first.
+1. Install `media.codecs` 2.1+ from [gen5-codec-patch releases](https://github.com/KramerTech/gen5-codec-patch/releases) first. If you have an older version, update it first; older versions don't tell NEMESIS their version, so the dashcam shows as incompatible until you do.
 2. Download the latest dashcam release from the [releases page](https://github.com/KramerTech/gen5-RearDashcam/releases/latest) and install it from a USB drive or over ADB:
 
 **From a USB drive:** unzip `dashcam-<version>-usb.zip` onto an empty USB drive. Plug it in once the head unit has fully started, and confirm the install. You can keep recording to that same drive afterwards.
