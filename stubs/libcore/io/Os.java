@@ -1,6 +1,7 @@
 package libcore.io;
 
 import java.io.FileDescriptor;
+import libcore.util.MutableInt;
 
 // Compile-only stub of the hidden framework interface (the real methods throw ErrnoException).
 public interface Os {
@@ -8,4 +9,5 @@ public interface Os {
     void close(FileDescriptor fd) throws Exception;
     long mmap(long address, long byteCount, int prot, int flags, FileDescriptor fd, long offset) throws Exception;
     void munmap(long address, long byteCount) throws Exception;
+    int ioctlInt(FileDescriptor fd, int cmd, MutableInt arg) throws Exception;
 }

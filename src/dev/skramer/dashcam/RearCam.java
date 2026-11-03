@@ -154,6 +154,17 @@ final class RearCam {
         return b.append(" (facing 0 back, 1 front, 2 aux video, 3 DVRS)").toString();
     }
 
+    static final int GEAR_REVERSE = 1;
+
+    /** RearCamera.getGearStatus(): GEAR_REVERSE in reverse, or -1 if it can't say. */
+    static int gear() {
+        try {
+            return (Integer) call(Class.forName(CLASS), null, "getGearStatus", new Class<?>[0]);
+        } catch (Throwable t) {
+            return -1;
+        }
+    }
+
     /** RearCamera.getCameraType(): how this car's camera is connected (0 analog), or -1. */
     static int type() {
         try {
