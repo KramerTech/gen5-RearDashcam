@@ -5,7 +5,7 @@ name=Rear Dashcam
 type=application,service
 package-version=@VERSION@
 short-desc=Records the backup camera to a USB drive while driving
-depends=media.codecs@>=2.1
+depends=media.codecs
 os=NEEV23.*
 models=neev*
 preinstall=scripts/preinstall.sh
@@ -16,6 +16,12 @@ kind=apk
 path=app/DashcamPlayer.apk
 package=dev.skramer.dashcam.player
 component=dev.skramer.dashcam.player/dev.skramer.dashcam.player.MainActivity
+
+[app.1]
+kind=apk
+path=app/DigitalRearviewMirror.apk
+package=dev.skramer.dashcam.mirror
+component=dev.skramer.dashcam.mirror/dev.skramer.dashcam.mirror.MainActivity
 
 [service.0]
 name=recorder

@@ -4,10 +4,11 @@ The details behind the [README](README.md), for the curious and for anyone debug
 
 ## The pieces
 
-The package has two main pieces:
+The package has three main pieces:
 
 - **The recorder**, a background service with no screen. NEMESIS starts it at boot as `svc/recorder.sh`, which runs `dashcam.jar` under `app_process`. It starts as root, keeps the steering-wheel key device open, then switches to the system user (uid 1000) with group `sdcard_r`, so it can use the camera and write to the USB drive.
 - **The Dashcam app** (`dev.skramer.dashcam.player`), for watching recordings and turning recording on and off. The app and the recorder only talk through files (see [Files](#files)).
+- **Digital Rearview Mirror** (`dev.skramer.dashcam.mirror`), a separate live-only viewer. It receives completed frames from the recorder over a local socket; it has no playback, camera HAL or storage access. The player keeps its own parked-only driving guard.
 
 Two more NEMESIS services support the recorder: `svc/watchdog.sh` kills it if it stops responding (see [Reverse](#reverse-and-the-camera-button)), and `svc/overlay.sh` starts the native display helper with the boot-time privileges needed to hide the camera layer (see [Projection](#projection-and-the-camera-display-layer)).
 
@@ -19,17 +20,18 @@ Two more NEMESIS services support the recorder: `svc/watchdog.sh` kills it if it
 - Nothing signals a finished frame. A watcher thread looks at a strip near the top of each buffer every 2 ms (waiting 12 ms right after a buffer starts, since the next can't start for about a frame): when one changes, the hardware has started writing it, so the buffer before it is complete. That one is copied out while the next three are written (about 50 ms), and dropped if it starts being written again during the copy.
 - The picture comes out as the reverse view shows it: mirrored, with the parking guide lines drawn in. The guide lines are switched off while recording (see [Parking guide lines](#parking-guide-lines)), and frames are mirrored back when they're converted.
 - Copying frames out is the biggest cost: about 23 ms a frame, half a CPU core at 20 fps. The camera memory isn't System RAM, so the kernel maps it strongly-ordered (uncached, no burst reads) whatever we ask for; it's read with one `memcpy` per frame, which is as fast as that memory allows. At 720×480 and 20 fps the recorder uses a little over half of one core (of four).
+- 720×480 is also the analog camera's own resolution: NTSC, two 720×240 fields (`vin_crop` 720×240, interlaced, in the kernel log), which the hardware deinterlaces. A bigger recording size is only upscaled, with no more detail. Tried at 1136×720 (the stock view's 1140 rounded down: the hardware encoder won't start unless the width is a multiple of 16), it took about 2.7 times the CPU and tore about 3% of frame copies.
 - Every 30 seconds the log gets a line on how heavy recording is: frame rate, milliseconds per frame to copy out and to convert, frames lost, and CPU use from `/proc`: the recorder (and its busiest threads), mediaserver (where the camera service and the H.264 encoder run), the whole system, and the load average. The GPU isn't measured: the kernel has no load counters for it, and recording doesn't use it.
 - Frame-detection strip hashing runs in native C in one JNI call for all four buffers, with the same 32-bit hashes and Java fallback. It reuses its buffers and preserves the existing capture cadence.
 - Frames are kept down to the chosen frame rate on an even cadence. They're converted to I420 and mirrored left to right in the same pass, in C with NEON (`libdashcam.so`, about 1 ms a frame; the head unit's Dalvik VM took 12 ms in Java, which is still the fallback), straight into the encoder's input buffer, then passed to the head unit's hardware H.264 encoder (`OMX.TCC.ENC.avc`), with a keyframe every second.
 - Encoded video is written as MPEG-TS files, one per minute by default, named by start time (`20261026_220609.ts`). A new file always starts on a keyframe. The file is synced to the drive every second, so a sudden power cut loses at most about a second.
 - There's no audio; the camera has none.
 - Before each new file, the oldest files in the `Dashcam` folder are deleted until the chosen share of the drive is free. Files in `Saved` and `Snapshots` are never touched.
-- Normal recording waits until the drive is mounted at `/storage/usb0`, so it never fills the head unit's internal storage. The explicit `/dev/null` test mode runs the encoder without saving files.
+- Normal recording waits until the drive is mounted at `/storage/usb0`, so it never fills the head unit's internal storage.
 
 ### Settings
 
-Normal recording has one setting: on or off (tap the status at the top of the main screen). Camera Debug also offers an explicit `/dev/null` test mode when no drive is mounted. Recording quality is fixed, at what's been tested: 720×480 at 20 fps, 3 Mbit/s (about 1.35 GB an hour), one file a minute, and 5% of the drive kept free.
+Normal recording has one setting: on or off (tap the status at the top of the main screen). Recording quality is fixed, at what's been tested: 720×480 at 20 fps, 3 Mbit/s (about 1.35 GB an hour), one file a minute, and 5% of the drive kept free.
 
 To experiment, the recorder takes arguments in `/data/nemesis/apps/dashcam/dashcam.conf` (`DASHCAM_ARGS="--fps=15"`). Updating the package replaces that file.
 
@@ -41,7 +43,7 @@ To experiment, the recorder takes arguments in `/data/nemesis/apps/dashcam/dashc
 | `--min-free-percent` | `5` | the oldest files are deleted to keep this share of the drive free |
 | `--out` | `/storage/usb0/Dashcam` | where recordings go |
 | `--mount` | `/storage/usb0` | recording waits until this is mounted |
-| `--width`, `--height` | `720`, `480` | recording size; the camera hardware scales to it |
+| `--width`, `--height` | `720`, `480` | recording size; the camera hardware scales to it. The width must be a multiple of 16 |
 | `--mirror` | `true` | flip left to right |
 | `--hide-guide-lines` | `true` | turn the parking guide lines off while recording |
 | `--save-button` | `auto:37` | input device and key code for the save button; `auto` is the head unit's key device, `daudio_` plus its model; empty turns it off |
@@ -80,7 +82,7 @@ Only one program can have the camera at a time, and while the dashcam has it, th
 
 ## Saving from the steering wheel
 
-- The recorder reads the head unit's key device without grabbing it, so mute still works as usual. The device is named `daudio_` plus the head unit's model (`ro.product.device`): `daudio_wp_daudioplus_neev23_us`, `/dev/input/event1`, on the IONIQ 5. If no device has that name, the recorder uses the only `daudio_` device there is. Camera Debug reports list the input devices. It opens the device while still root, since the system user can't.
+- The recorder reads the head unit's key device without grabbing it, so mute still works as usual. The device is named `daudio_` plus the head unit's model (`ro.product.device`): `daudio_wp_daudioplus_neev23_us`, `/dev/input/event1`, on the IONIQ 5. If no device has that name, the recorder uses the only `daudio_` device there is. It opens the device while still root, since the system user can't.
 - Mute is key 37. Four presses, each within 0.7 s of the last, trigger a save. Quick presses on this car come about 0.2 s apart and ordinary ones over a second apart.
 - On a save, the file being written ends at the next keyframe, under a second later, and recording carries on in a new file with nothing lost. Then every file last written to within the past two minutes moves to `Saved`. With 1-minute files that's 2 or 3 files, covering at least the two minutes before the press.
 - The saved recording is named "Saved from steering wheel", and the head unit shows a pop-up through the car's own toast message.
@@ -92,6 +94,22 @@ Only one program can have the camera at a time, and while the dashcam has it, th
 - **Save** in the player keeps the minute before and after what's on screen.
 - Names are kept on the drive in `Dashcam/Saved/names.txt`, one line per recording: the name of its first file, a tab, then the name.
 
+## Digital Rearview Mirror and long Mode
+
+The own-car firmware already classifies steering-wheel Mode (`deviceId=5`, key code 254) as a short or long press. `PushKeyFromMicom.getPressType` treats a down event carrying flag `0x80` as long. `ModeKeyDispatcher.sendBroadcastKeyEvent` cycles media only on a short release; after a long press its release does not cycle media. The long event requests `com.hkmc.intent.action.MODE_SHORTCUT_LONG`, which normally opens Button Settings. There is therefore no need to delay or synthesize short presses.
+
+`MirrorKey` registers a read-only `IModeKeyListener` (transaction 76 on `com.hkmc.micom.mode`) for mode 0, and handles `onAllKeyForService` (callback 3). Mode 0 is a mode registration, not a key-code filter or exclusive input priority. The listener filters steering-wheel Mode itself, deduplicates hardware long repeats, and posts launches outside the OEM Binder callback. It refuses launches during stock camera requests, with ignition off, or while another OEM key owner has an exclusive priority. It never grabs `/dev/input`, calls `disableAllKeysExcept`, changes the media mode, or alters framework firmware.
+
+While this listener's heartbeat is fresh, the existing root watchdog invokes `scripts/mirror-filter.sh` as uid 1000 (system) to atomically install `mirror-mode.xml` as `/data/system/ifw/dashcam-mirror-mode.xml`. System owns the firewall directory (0700); NEMESIS root has no DAC override. Android's IntentFirewall blocks only the default Mode-long broadcast. The listener sees hardware events independently of broadcasts, so it can open the mirror without racing Button Settings. A one-second reload delay precedes the acknowledgement used by the listener. The watchdog removes this one rule if the listener or recorder disappears; startup, crash cleanup and package preuninstall also remove it. Other firewall rules are untouched. Uninstall restores the stock long-Mode action, with no factory APK, ODEX or register patch to restore.
+
+The live socket `dev.skramer.dashcam.mirror` accepts only the installed mirror application's UID. Each pull renews a 1.5-second lease. Responses contain a magic/version value, dimensions, the capture uptime, mirror flag, and little-endian BGRA pixels. Dimensions −1×0 indicate a request to close the viewer. The server keeps only the newest completed frame and caps clients at 20 fps. It publishes an existing cached recorder frame, with no second read of uncached camera RAM or extra encoder. The viewer uses OpenGL ES 2 for color-channel conversion, aspect fitting and mirroring; both apps compile the same small `RamView` source, without sharing activities or playback dependencies.
+
+When recording is already running, viewing leaves that session running. Opening or closing the viewer does not reopen an existing camera session. Its window transitions are disabled; a new shared camera session starts with its overlay horizontally centered. Without a USB drive, or with recording disabled, the guard can run a preview-only session at the configured source resolution, without creating an encoder. Holding Mode again sends a close command through the live socket, without relaunching the activity. Tapping anywhere, pressing Back, or backgrounding the viewer closes its socket; an expired lease ends a preview-only session. Ignition and stock reverse/parking-view handoff still take priority. The server withholds frames during handoff, and both server and viewer reject frames older than 750 ms, so a frozen picture is replaced with an explicit waiting/interrupted message.
+
+Emulator verification is documented in [tools/mirror-tests](tools/mirror-tests/README.md). It covers captured OEM short/long dispatch, real Android broadcast filtering and removal, actual Binder callbacks into the production listener, and the production socket/viewer with synthetic 1140×720 frames. Physical button timing, live camera load and stock-camera transitions still need a parked-car check; the emulator has no Hyundai camera HAL or display controller.
+
+Native dialog checks use the [OEM alert theme port](tools/emulator-theme/README.md). On this firmware `AlertDialog.resolveDialogTheme` ignores the requested theme and always selects the legacy alert theme, including for Holo Dark requests. The derived SDK image reproduces that selection, the light wide-screen alert assets, and the Mobis font family while retaining the SDK resource IDs and hardware implementations. The donation dialog supplies its own background, header and text colors to remain readable on both systems. This does not emulate the whole OEM SystemUI.
+
 ## Files
 
 | Path | What's there |
@@ -100,18 +118,15 @@ Only one program can have the camera at a time, and while the dashcam has it, th
 | `Dashcam/Saved/` | saved recordings, plus `names.txt` |
 | `Dashcam/Snapshots/` | snapshots from the player, as JPEG |
 | `/data/nemesis/dashcam.log` | the recorder's log (rotated at 1 MB) |
-| `/data/nemesis/dashcam/status` | state (recording, recording-null, reversing, debug, reverse, caroff, off, nodrive, starting), configured enabled state, drive presence and null-test request, for the app |
-| `/data/nemesis/dashcam/debug`, `debug-report.txt` | the debug session's state and recent log lines, and the recorder's part of a debug report, for the camera debug screen |
+| `/data/nemesis/dashcam/status` | state (recording, reversing, live, reverse, caroff, off, unsupported, nodrive, starting), configured enabled state and drive presence, for the app |
+| `/data/nemesis/dashcam/mirror-key-ready`, `mirror-key-filtered` | Mode-listener heartbeat and root watchdog's filter acknowledgement |
+| `/data/system/ifw/dashcam-mirror-mode.xml` | temporary default-long-Mode broadcast filter; removed on listener failure or uninstall |
 | `/data/nemesis/dashcam/settings` | the recorder's copy of the app's setting (recording on or off) |
 | `/data/nemesis/dashcam/heartbeat` | for the watchdog |
 | `/data/nemesis/dashcam-overlay.log` | native display helper startup, refusals and alpha changes; rotated at 1 MiB |
-| `/data/nemesis/dashcam/null-recording-cancelled` | request token cancelled by USB insertion, preventing automatic reactivation |
 | `/data/nemesis/apps/dashcam/dashcam-overlay` | boot-started native display helper executable |
 | `/data/nemesis/dashcam/guidelines-hidden` | present while the recorder has the guide lines off |
 | `/data/data/dev.skramer.dashcam.player/files/recorder.conf` | the app's setting: `enabled=true` or `false` |
-| `/data/data/dev.skramer.dashcam.player/files/null-recording` | explicit null-test request token; removed when the app turns testing off |
-| `/data/data/dev.skramer.dashcam.player/files/debug` | the camera debug screen's request (camera, size, report), rewritten every half second while it's open |
-| `Dashcam/camera-debug-*.txt`, `.png` on the drive | debug reports and the picture at the time |
 
 **Updates:** a NEMESIS update uninstalls the app before installing the new one, which wipes the app's own files. The recorder keeps a copy of the on/off setting outside the app, and the update keeps that copy, so it survives. Recordings and names are on the drive, so they're never affected.
 
@@ -120,29 +135,16 @@ Only one program can have the camera at a time, and while the dashcam has it, th
 ## The Dashcam app
 
 - Plays a whole hour as one continuous timeline with Media3 ExoPlayer, which steps frame by frame and plays at 0.5× to 8×.
-- Playback needs the Video Codec Fix package (`media.codecs` 2.1+, from [gen5-codec-patch](https://github.com/KramerTech/gen5-codec-patch)). The firmware's codec list names decoders that can't be created, so without it ExoPlayer's decoder query fails and nothing plays. `NEMESIS.data` declares it with `depends=media.codecs@>=2.1` (NEMESIS 1.16+): an install without it is marked incompatible and needs the user to accept the risk, and NEMESIS won't uninstall `media.codecs` while the dashcam is installed. 2.1 is the first version that declares a `package-version`; for older ones NEMESIS sees no version and the dependency fails.
+- Playback needs the Video Codec Fix package (`media.codecs`, from [gen5-codec-patch](https://github.com/KramerTech/gen5-codec-patch)). The firmware's codec list names decoders that can't be created, so without it ExoPlayer's decoder query fails and nothing plays. `NEMESIS.data` declares `depends=media.codecs`; NEMESIS blocks an install without it and prevents uninstalling the dependency while the dashcam is installed. Version 2.1 uses the current package-version metadata. Existing 2.0.x packages contain the same decoder binaries, so the dependency checks their presence without requiring newer metadata.
 - Snapshot saves the frame as shown, zoom included.
 - Like the stock apps, it follows the car's driving restriction (`com.hkmc.regulation`) and only works in Park.
 - Renaming uses a keyboard built into the app, the same one as the Tilepad launcher's.
-
-## Camera Debug
-
-**Camera Debug** (long-press the drive space at the top right of the main screen) is for working out why a car records blank video. By default, while it's open, the recorder pauses saved recording and runs a debug session instead: the camera and size chosen on the screen (whether or not recording is on, and without a drive), checked like recording frames but not encoded. It still hands the camera to the reverse view.
-
-- **Picture:** the screen maps the camera's memory itself, read-only, and draws completed frames as they arrive (up to 30 a second) with OpenGL, mirrored back like recordings. Debug sessions turn the guide lines off too, so frames from the stock view's session are the ones with guide lines. Because it reads the memory directly, it also shows frames the stock reverse view's session writes.
-- **Log:** its own lines (`app`) and the recorder's (`rec`), timed to the millisecond: when frames start and stop arriving, when the picture appears or goes flat, the recorder's camera start, parameters, video signal and hand-offs. Press the camera button with the screen open, and the log shows whether the picture appeared before or after the recorder let go of the camera.
-- **Scan RAM** (also run when the screen opens and whenever frames start or stop) samples every 16 KiB of `rearcamera` and `rearcamera_viqe` for a second. It lists which ranges change and what they hold, and guesses the frame size from how far the changing part reaches.
-- **Save Report** writes `Dashcam/camera-debug-<time>.txt` and a `.png` of the picture. The text holds the log, the last scan, the camera list, `/proc/pmap`, the rear camera service's dump, camera-related lines from `getprop`, `dmesg` and the recorder's logcat, and the recorder's recent log. The recorder runs as the system user, so its logcat includes the stock camera app's lines but not mediaserver's.
-- **Auto Test** tries nine setups for 10 s each (after 5 s for the camera to reopen): sizes 720×480 to 1920×720 including the stock view's 1140×720, 1710×720 and 1780×720, camera 3, and both parameter styles (ours, or the HAL's own with only the position and size changed, as the stock view does). It logs how many frames reached RAM for each, then saves a report on its own.
-- Reports also list the device-tree camera, deserializer and video-input nodes with their status, and the input devices.
-- Closing the screen ends the preview session; normal recording resumes when eligible. The explicit null-test request continues independently after leaving the page.
-- After a minute out of sight, the screen closes itself.
 
 ## Cars it can't record
 
 The HAL reports a camera type (`RearCamera.getCameraType()`). The analog camera this was built on is type 0. Cars with a 360° (surround view) camera, such as the IONIQ 5 Limited, and the EV6 tested so far report type 6, a digital (LVDS) camera behind a deserializer (`tcc_camera/max96706_lvds` in the device tree). There, a direct-display session opens and reports a video signal, but the hardware writes only a few frames of dark gray and stops, at every size and with either parameter style. Frames reach the same RAM only while the car itself shows a camera view: about 60 ms after the camera button, even with our session still open. The button goes to the parking controller, which switches the video on and tells the head unit over CAN. No head-unit request found so far starts it (the parking service's rear-camera power request made no difference).
 
-So the installer's `preinstall` hook (`scripts/preinstall.sh`) asks the HAL for the camera type, through `CameraCheck` in the staged `dashcam.jar`, and refuses type 6 with a toast. If it can't get an answer, it installs anyway; then the recorder checks the type itself when it starts, doesn't record on type 6 (Camera Debug still runs), and reports the state `unsupported`, which the Dashcam app explains on its main screen. On an update, NEMESIS runs the old package's `preuninstall` before this hook, so a refused update leaves the dashcam uninstalled.
+So the installer's `preinstall` hook (`scripts/preinstall.sh`) asks the HAL for the camera type, through `CameraCheck` in the staged `dashcam.jar`, and refuses type 6 with a toast. If it can't get an answer, it installs anyway; then the recorder checks the type itself when it starts, doesn't record on type 6, and reports the state `unsupported`, which the Dashcam app explains on its main screen. On an update, NEMESIS runs the old package's `preuninstall` before this hook, so a refused update leaves the dashcam uninstalled.
 
 Only the IONIQ 5 is supported. `NEMESIS.data` says so with `os=NEEV23.*` (the firmware it was tested on, `ro.build.product`) and `models=neev*` (the IONIQ 5's model directories under `/system/onebin`, which NEMESIS reads from `ro.mobis.targetdir`). NEMESIS 1.16 uses these for its compatibility verdict, but a mismatch is only a warning the user can accept, and the NEEV23 firmware also carries the IONIQ 6 (`ceev_us`, `ceev_ca`), which would match `os`. So `preinstall` first refuses unless the model directory is `neev*`, then does the camera-type check. NEMESIS can't tell trims apart; the camera-type check is what keeps the 360-view trims out.
 
@@ -239,7 +241,38 @@ writes are confined to volatile display registers, not persistent storage.
 Between ownership changes the helper blocks in socket I/O: no per-frame work,
 polling, shell commands, GPU rendering or frame copies. Its log is
 `/data/nemesis/dashcam-overlay.log`, rotated at 1 MiB. Refused requests include
-register values, and Camera Debug reports include its last 100 lines.
+register values.
+
+### Switching screens
+
+The camera's alpha only takes where a layer is under it. The mixer's color
+control for each layer (WMIX0 CCON, Telechips' default `0x20c44cc4`) blends by
+alpha only in the region where both layers have pixels; where nothing is under a
+layer it shows that layer's pixels as they are. Over Android Auto's video the
+camera is hidden; with no video layer on (RDMA2 and RDMA3 off) it isn't.
+
+That shows when switching screens. Telechips' hardware composer
+(`hwcomposer.tcc803x.so`, `tc_hide_fbTarget`) hides the UI layer for a few
+frames between apps, through framebuffer ioctl `0x91`, which sets RDMA0 to
+constant alpha 0. The next frame flip turns its per-pixel alpha back on. On a
+stock unit nothing changes on screen, since with nothing under the UI its alpha
+doesn't count either and its last frame stays up. With the camera layer under
+it, the camera showed for those frames.
+
+So while it holds a lease, the helper checks the UI layer every millisecond, at
+the lowest real-time priority (set at boot, before it drops root). When the UI is
+hidden that way and no video layer is on, it sets RDMA0's constant alpha to
+opaque, so the UI's last frame shows as on a stock unit; when a video layer comes
+on, or the lease ends, it puts 0 back. With a video layer on it leaves the UI
+alone, so video shows through. A screen refresh can still fall between the
+composer's hide and the check, so now and then a single frame of camera shows.
+The checks cost about 1.3% of one core.
+
+Changing the camera layer's color control instead (pixel × alpha where nothing
+is under it) hides it with no delay, but then a black rectangle shows where the
+camera layer is. The chroma key could drop the layer out entirely, but nothing
+resets it when the camera restarts, so a helper killed while it was set would
+leave the stock reverse view invisible.
 
 Wired Android Auto, continuous camera capture, stock-camera handoff and recorder
 death recovery were checked on the NEEV23 unit. CarPlay and other units have not
@@ -270,43 +303,15 @@ background: it switches to the system uid, waits for the notification service,
 cancels both notices every 250 ms for a minute and exits. A notice can still
 flash briefly before it's cancelled.
 
-## Wired projection testing without a USB drive
+## The main screen
 
-The camera debug page has a **Record to /dev/null** toggle button, immediately
-left of **Scan RAM**, with an empty/green circle for off/on. It is visible
-only while the configured USB drive is not mounted. It starts the normal camera
-and hardware encoder and discards encoded output without allocating frame copies,
-writing segments, or consuming storage. It remains active after leaving the debug
-page, so wired Android Auto can use the USB port. The main screen says
-**Recording to /dev/null**; with testing off and no mounted drive it says
-**No Drive Detected**. Capacity is read only after checking `/proc/mounts`.
-
-The app writes a unique request token in its private files directory. The recorder
-cancels that token when a drive is mounted, records the cancellation in its state
-directory, and returns to normal drive recording. This works with the app closed
-and survives recorder restarts; removing the drive cannot reactivate an old test
-request. A new explicit toggle action is needed. The toggle is hidden and
-switched off with a drive present. Camera size/source controls are locked to the
-normal recording configuration during this test mode. Saving clips is unavailable
-because encoded output is discarded. Ignition and reverse handoff still apply.
-
-The debug preview stops reading camera RAM while its activity is hidden, avoiding
-a second full-frame copy loop behind AA. It resumes on returning to the page.
-`tests/null-recording.sh` verifies request cancellation and restart behavior.
-
-Tapping the main recording control during null recording cancels the test and
-leaves normal recording enabled, waiting for its USB drive. A hidden debug page
-suspends its preview lease during the test so it cannot restart a debug session
-after this cancellation. With no drive, Saved (0) and Play Latest are disabled
-and dimmed. The null-recording button uses the normal background in both states;
-only its empty/green indicator changes.
+With no drive, Saved (0) and Play Latest are disabled and dimmed.
 
 The main recording button has a fixed width measured from all its status labels.
-Its indicator is green for null recording, red for recording to the drive, and amber
-while waiting. Neither recording toggle uses a selected border. Recording commands
+Its indicator is red while recording and amber while waiting. Neither recording toggle uses a selected border. Recording commands
 hold their pending display until acknowledged by the recorder, ignoring stale
 polls; the control becomes usable again after a ten-second timeout if no answer
-arrives. `tests/record-command.sh` covers stale polls, transitions and cancellation.
+arrives. `tests/record-command.sh` covers stale polls, transitions and the timeout.
 
 Settings changes compare file length as well as modification time, because this
 KitKat build can timestamp consecutive writes in the same second. This prevents

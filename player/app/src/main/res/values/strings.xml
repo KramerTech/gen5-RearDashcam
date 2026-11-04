@@ -2,4 +2,8 @@
 <resources>
     <string name="app_name">Dashcam</string>
     <string name="driving">Dashcam playback is not available while driving</string>
+    <string name="coffee_title">☕ Buy me a coffee? ☕</string>
+    <string name="coffee_message">If you find this software useful, please consider making a small donation to support my work 🙂</string>
+    <string name="coffee_url">ko-fi.com/kramertech</string>
+    <string name="coffee_dismiss">Done</string>
 </resources>

@@ -10,24 +10,19 @@ import java.nio.charset.StandardCharsets;
 
 /**
  * The recorder service (the dashcam NEMESIS package). What it's doing comes from its status
- * file. What it should do goes in files in this app's own files directory, which only this app
- * can write and the recorder reads: recorder.conf (settings) and debug (the camera debug
- * screen's request).
+ * file. What it should do goes in recorder.conf (the settings) in this app's own files
+ * directory, which only this app can write and the recorder reads.
  */
 final class RecorderLink {
     private static final File STATE = new File("/data/nemesis/dashcam");
     static final String CONF = "recorder.conf";
-    /** The camera debug screen's request; see CameraDebugActivity. */
-    static final String DEBUG = "debug";
-    static final String NULL_RECORDING = "null-recording";
     /** The heartbeat is rewritten every second while the recorder runs. */
     private static final long HEARTBEAT_STALE_MS = 10_000;
 
-    /** recording, reversing, debug, reverse, caroff, off, nodrive, starting; or null if there's no status. */
+    /** recording, reversing, live, reverse, caroff, off, unsupported, nodrive, starting; or null if there's no status. */
     String state;
     long since;
     boolean running;
-    boolean nullRecording;
     Boolean configuredEnabled;
     String out = "/storage/usb0/Dashcam";
     String mount = "/storage/usb0";
@@ -45,7 +40,6 @@ final class RecorderLink {
                 try {
                     switch (k) {
                         case "state": r.state = v; break;
-                        case "nullrecording": r.nullRecording = Boolean.parseBoolean(v); break;
                         case "enabled": r.configuredEnabled = Boolean.parseBoolean(v); break;
                         case "since": r.since = Long.parseLong(v); break;
                         case "out": r.out = v; break;
@@ -75,35 +69,6 @@ final class RecorderLink {
             }
         } catch (IOException ignored) { }
         return false;
-    }
-
-    static boolean nullRecording(Context context) {
-        String request = token(new File(context.getFilesDir(), NULL_RECORDING));
-        return !request.isEmpty() && !request.equals(token(new File(STATE, "null-recording-cancelled")));
-    }
-
-    static void setNullRecording(Context context, boolean enabled) throws IOException {
-        File dir = context.getFilesDir(), request = new File(dir, NULL_RECORDING);
-        if (!enabled) {
-            if (request.exists() && !request.delete()) throw new IOException("can't remove null recording request");
-            return;
-        }
-        if (driveMounted(read().mount)) throw new IOException("USB drive is connected");
-        File tmp = new File(dir, NULL_RECORDING + ".tmp");
-        try (FileOutputStream out = new FileOutputStream(tmp)) {
-            out.write(java.util.UUID.randomUUID().toString().getBytes(StandardCharsets.US_ASCII));
-        }
-        readableByRecorder(dir, tmp);
-        if (!tmp.renameTo(request)) throw new IOException("can't replace null recording request");
-    }
-
-    private static String token(File file) {
-        if (!file.isFile()) return "";
-        try (java.io.FileInputStream in = new java.io.FileInputStream(file)) {
-            byte[] bytes = new byte[64];
-            int n = in.read(bytes);
-            return n == 36 ? new String(bytes, 0, n, StandardCharsets.US_ASCII) : "";
-        } catch (IOException ignored) { return ""; }
     }
 
     boolean enabled() {

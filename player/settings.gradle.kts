@@ -5,3 +5,4 @@ dependencyResolutionManagement {
 }
 rootProject.name = "DashcamPlayer"
 include(":app")
+include(":mirror")

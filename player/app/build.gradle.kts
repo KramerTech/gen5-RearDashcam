@@ -7,6 +7,7 @@ val versionParts = dashcamVersion.split(".").map { it.toInt() } + listOf(0, 0, 0
 android {
     namespace = "dev.skramer.dashcam.player"
     compileSdk = 36
+    sourceSets.getByName("main").java.srcDir("../view/src/main/java")
     defaultConfig {
         applicationId = "dev.skramer.dashcam.player"
         minSdk = 19

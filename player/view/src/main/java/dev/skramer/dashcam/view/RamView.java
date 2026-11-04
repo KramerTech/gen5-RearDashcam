@@ -1,4 +1,4 @@
-package dev.skramer.dashcam.player;
+package dev.skramer.dashcam.view;
 
 import android.content.Context;
 import android.opengl.GLES20;
@@ -14,7 +14,7 @@ import javax.microedition.khronos.opengles.GL10;
  * a texture, as is, and the shader swaps the colors into place, ignores alpha and mirrors, so the
  * CPU only copies. Frames are drawn whole, fit to the view.
  */
-final class RamView extends GLSurfaceView implements GLSurfaceView.Renderer {
+public final class RamView extends GLSurfaceView implements GLSurfaceView.Renderer {
     private static final String VERTEX = "attribute vec2 p; attribute vec2 uv; varying mediump vec2 v;"
             + " void main() { v = uv; gl_Position = vec4(p, 0.0, 1.0); }";
     private static final String FRAGMENT = "precision mediump float; varying mediump vec2 v; uniform sampler2D t;"
@@ -30,11 +30,11 @@ final class RamView extends GLSurfaceView implements GLSurfaceView.Renderer {
     /** GL thread only. */
     private int program, texture, aPos, aUv, uTex, texW, texH, surfaceW, surfaceH;
     /** For the stats: frames uploaded, and the time spent uploading them. */
-    volatile long uploads, uploadNs;
+    public volatile long uploads, uploadNs;
     /** Set if OpenGL failed; nothing is drawn after. */
-    volatile String error;
+    public volatile String error;
 
-    RamView(Context c) {
+    public RamView(Context c) {
         super(c);
         setEGLContextClientVersion(2);
         setRenderer(this);
@@ -42,7 +42,7 @@ final class RamView extends GLSurfaceView implements GLSurfaceView.Renderer {
     }
 
     /** From any thread: a w × h frame of BGRA bytes, copied, to draw next. */
-    void post(byte[] bgra, int w, int h, boolean mirror) {
+    public void post(byte[] bgra, int w, int h, boolean mirror) {
         synchronized (lock) {
             if (pending == null || pending.capacity() != bgra.length) pending = ByteBuffer.allocateDirect(bgra.length);
             pending.clear();

@@ -36,9 +36,9 @@ import java.util.concurrent.TimeUnit;
  * The player app's settings file turns recording off and on. The status file says what the
  * recorder is doing.
  *
- * While the app's camera debug screen is open (see {@link CameraDebug}) the camera runs a debug
- * session the screen asks for instead, whether or not recording is on, with the same hand-off
- * to the stock view.
+ * While the mirror's live view is wanted and nothing is being recorded (recording off, or no
+ * drive), the camera runs a preview session for it instead (state "live"), with the same
+ * hand-off to the stock view.
  *
  * It only records while the ignition is on. The head unit also starts up while the car is off
  * (every half hour or so overnight, for the car's own checks), and then the camera has no power
@@ -65,17 +65,21 @@ final class Guard extends Thread {
     private final File heartbeat, status, appConf;
     private final Method gearStatus;
     private final StockCameraWatcher watcher = new StockCameraWatcher();
-    private final CameraDebug cameraDebug;
-    private final NullRecording nullTest;
+    private final MirrorFeed mirror;
     private boolean driveMounted;
     /** Until then (uptime ms), take down SystemUI's USB notice every state poll: a minute from startup or a mount, the scan's length. */
     private long hideStorageUntil = SystemClock.uptimeMillis() + STORAGE_NOTICE_MS;
     private boolean storageNoticeFailed;
-    private volatile boolean nullRequested;
     private final Runnable startRecorder = new Runnable() {
         @Override
         public void run() {
-            if (nullRequested) recorder.startNull(); else recorder.start();
+            recorder.start();
+        }
+    };
+    private final Runnable startPreview = new Runnable() {
+        @Override
+        public void run() {
+            recorder.startPreview();
         }
     };
     private final Runnable takeBack = new Runnable() {
@@ -92,10 +96,11 @@ final class Guard extends Thread {
     private Boolean lastIgnition;
     private String lastState;
 
-    Guard(Config config, Recorder recorder) {
+    Guard(Config config, Recorder recorder, MirrorFeed mirror) {
         super("guard");
         this.config = config;
         this.recorder = recorder;
+        this.mirror = mirror;
         storage = new Storage(config);
         heartbeat = new File(config.stateDir, "heartbeat");
         status = new File(config.stateDir, "status");
@@ -103,8 +108,6 @@ final class Guard extends Thread {
         appConfModified = appConf.lastModified();
         appConfLength = appConf.length();
         disabled = !config.enabled;
-        cameraDebug = new CameraDebug(config);
-        nullTest = new NullRecording(config);
         gearStatus = gearMethod();
         setDaemon(true);
     }
@@ -121,10 +124,9 @@ final class Guard extends Thread {
         if (disabled) Log.i("recording is turned off in the app");
         // Camera type 6 (360-view cars' digital camera) sends video only while the car shows its own
         // camera view. The installer refuses these cars; this is in case its check couldn't tell.
-        // Camera Debug still runs there.
         final boolean unsupported = RearCam.type() == UNSUPPORTED_CAMERA_TYPE;
         if (unsupported) Log.w("camera type " + UNSUPPORTED_CAMERA_TYPE + " isn't supported (360 view cars); not recording");
-        boolean wasDebugging = false;
+        boolean wasPreview = false;
         long nextStart = 0;
         boolean mounted = true;
         long nextStatePoll = 0;
@@ -137,6 +139,7 @@ final class Guard extends Thread {
                     lastGear = gear;
                 }
                 if (gear == GEAR_REVERSE) {
+                    mirror.allow(false);
                     lastBlockMs = now;
                     if (recorder.isActive() && !recorder.isPassive()) handOff("reverse");
                 }
@@ -148,7 +151,7 @@ final class Guard extends Thread {
                 boolean carOff = carOff();
                 boolean blocked = now - lastBlockMs < SETTLE_MS;
                 if (beat % 4 == 0) checkAppSettings();
-                if (beat % 4 == 0 || nullRequested || !driveMounted) {  // every poll while out, to catch a mount quickly
+                if (beat % 4 == 0 || !driveMounted) {  // every poll while out, to catch a mount quickly
                     boolean was = driveMounted;
                     driveMounted = storage.mounted();
                     if (driveMounted && !was) hideStorageUntil = now + STORAGE_NOTICE_MS;
@@ -157,25 +160,17 @@ final class Guard extends Thread {
                     storageNoticeFailed = true;
                     Log.w("can't take down the USB status-bar notice");
                 }
-                boolean requested = nullTest.requested(driveMounted);
-                if (requested != nullRequested) { nullRequested = requested; nextStart = 0; }
-                final CameraDebug.Request debug = cameraDebug.read();
-                boolean wantDebug = debug != null && !nullRequested;
-                if ((debug != null) != wasDebugging) {
-                    Log.i(debug != null ? "camera debug screen open" : "camera debug screen closed");
-                    wasDebugging = debug != null;
-                    if (debug == null) cameraDebug.end();
-                }
-                // The debug screen overrides recording being off.
-                boolean off = !wantDebug && (unsupported || disabled && !nullRequested);
-                String offState = unsupported && !wantDebug ? "unsupported" : "off";
+                // Only bootstrap the shared camera when no recording session is needed.
+                boolean wantPreview = mirror.requested() && !unsupported && (disabled || !driveMounted);
+                if (wantPreview != wasPreview) { wasPreview = wantPreview; nextStart = 0; }
+                boolean off = !wantPreview && (unsupported || disabled);
+                String offState = unsupported ? "unsupported" : "off";
                 String state;
                 if (recorder.isActive()) {
                     if (carOff) {
                         release("ignition off");
-                    } else if (recorder.isNullRecording() != nullRequested ||
-                            (wantDebug ? !recorder.isDebug() || !debug.matches(recorder) : recorder.isDebug())) {
-                        release("recording/debug mode changed");
+                    } else if (recorder.isPreview() != wantPreview) {
+                        release(wantPreview ? "recording stopped; live view only" : "recording instead of the live view");
                         nextStart = 0;
                     } else if (off) {
                         release("turned off");
@@ -191,8 +186,7 @@ final class Guard extends Thread {
                         }
                     }
                     state = !recorder.isActive() ? (carOff ? "caroff" : off ? offState : blocked ? "reverse" : "starting")
-                            : recorder.isDebug() ? "debug" : recorder.isPassive() ? "reversing"
-                            : recorder.isNullRecording() ? "recording-null" : "recording";
+                            : recorder.isPreview() ? "live" : recorder.isPassive() ? "reversing" : "recording";
                 } else if (carOff) {
                     state = "caroff";
                 } else if (off) {
@@ -202,27 +196,20 @@ final class Guard extends Thread {
                 } else {
                     if (now >= nextStart) {
                         nextStart = now + RETRY_MS;
-                        mounted = wantDebug || nullRequested || driveMounted;
+                        mounted = wantPreview || driveMounted;
                         if (!mounted) {
                             if (beat % 120 == 0) Log.i("waiting for " + config.mount);
                         } else if (stockCameraOpen()) {
                             Log.i("the stock view still has the camera; waiting");
                             lastBlockMs = now;  // the stock view is still up; check again after SETTLE_MS
-                        } else if (wantDebug) {
-                            main.post(new Runnable() {
-                                @Override
-                                public void run() {
-                                    recorder.startDebug(CameraDebug.camera(debug), debug.width, debug.height, debug.halParams);
-                                }
-                            });
                         } else {
-                            main.post(startRecorder);
+                            main.post(wantPreview ? startPreview : startRecorder);
                         }
                     }
                     state = mounted ? "starting" : "nodrive";
                 }
                 writeStatus(state);
-                if (debug != null) cameraDebug.update(debug, state, gear, recorder);
+                mirror.allow(!carOff && !blocked && !unsupported && recorder.isActive() && !recorder.isPassive());
                 if (beat % 4 == 0) writeHeartbeat(beat / 4);
                 beat++;
                 SystemClock.sleep(recorder.isActive() && !recorder.isPassive() ? POLL_MS : STATE_POLL_MS);
@@ -260,11 +247,11 @@ final class Guard extends Thread {
 
     /**
      * Lets go of the camera for the stock view, as release does, but goes on recording the stock
-     * view's frames (Recorder.handOff); a debug session just stops.
+     * view's frames (Recorder.handOff); a preview just stops.
      */
     private synchronized void handOff(String why) {
         if (!recorder.isActive() || recorder.isPassive()) return;
-        if (recorder.isDebug()) {
+        if (recorder.isPreview()) {
             release(why);
             return;
         }
@@ -383,18 +370,18 @@ final class Guard extends Thread {
 
     /**
      * What the player app shows: "recording", "reversing" (recording the reverse view's frames),
-     * "debug" (a camera debug session), "reverse" (the camera is with the reverse view),
+     * "live" (the camera runs for the mirror only), "reverse" (the camera is with the reverse view),
      * "caroff" (ignition off), "off", "unsupported" (camera type 6), "nodrive" or "starting", and since when. Written only when
      * it changes, readable by any app. The heartbeat's age says whether the recorder is running.
      */
     private void writeStatus(String state) {
-        String key = state + " " + driveMounted + " " + nullRequested + " " + disabled;
+        String key = state + " " + driveMounted + " " + disabled;
         if (key.equals(lastState)) return;
         File tmp = new File(config.stateDir, "status.tmp");
         String text = "state=" + state + "\nenabled=" + !disabled + "\nsince=" + System.currentTimeMillis() + "\nout=" + config.outDir
                 + "\nmount=" + config.mount + "\nfps=" + config.fps + "\nbitrate=" + config.bitrate
                 + "\nsegment=" + config.segmentSeconds + "\nminfree=" + config.minFreePercent
-                + "\ndrive=" + driveMounted + "\nnullrecording=" + nullRequested + "\n";
+                + "\ndrive=" + driveMounted + "\n";
         try (FileOutputStream out = new FileOutputStream(tmp)) {
             out.write(text.getBytes(StandardCharsets.US_ASCII));
         } catch (IOException e) {

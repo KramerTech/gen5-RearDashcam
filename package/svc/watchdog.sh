@@ -13,6 +13,7 @@ last=
 same=0
 while true; do
     sleep $INTERVAL
+    sync_mirror_key
     beat=$(cat "$STATE/heartbeat" 2>/dev/null) || continue
     if [ "$beat" = "$last" ]; then
         same=$((same + 1))

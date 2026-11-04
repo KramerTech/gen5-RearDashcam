@@ -43,6 +43,7 @@ public final class MainActivity extends Activity {
     private long selectedDay = -1;
     private long lastScan;
     private RecordCommand pendingCommand;
+    private android.app.Dialog coffeeDialog;
 
     private final Runnable statusTick = new Runnable() {
         @Override
@@ -57,6 +58,12 @@ public final class MainActivity extends Activity {
         super.onCreate(state);
         setContentView(R.layout.activity_main);
         DrivingGuard.onCreate(this);
+        try {
+            ((TextView) findViewById(R.id.versionText)).setText(
+                    "v" + getPackageManager().getPackageInfo(getPackageName(), 0).versionName);
+        } catch (android.content.pm.PackageManager.NameNotFoundException e) {
+            // our own package: can't happen
+        }
         statusDot = (ImageView) findViewById(R.id.statusDot);
         statusText = (TextView) findViewById(R.id.statusText);
         driveText = (TextView) findViewById(R.id.driveText);
@@ -98,19 +105,16 @@ public final class MainActivity extends Activity {
         statusToggle.setOnClickListener(new View.OnClickListener() {
             @Override
             public void onClick(View v) {
-                boolean cancelNull = rec.nullRecording || RecorderLink.nullRecording(MainActivity.this);
-                // Cancelling the test returns to normal recording, waiting for its drive.
-                boolean on = cancelNull || !rec.enabled();
+                boolean on = !rec.enabled();
                 RecorderLink.Settings s = RecorderLink.Settings.read(MainActivity.this);
                 s.enabled = on;
                 try {
-                    if (cancelNull) RecorderLink.setNullRecording(MainActivity.this, false);
                     s.write(MainActivity.this);
                 } catch (java.io.IOException e) {
                     Toast.makeText(MainActivity.this, "Couldn't save: " + e.getMessage(), Toast.LENGTH_LONG).show();
                     return;
                 }
-                pendingCommand = new RecordCommand(on, cancelNull, SystemClock.uptimeMillis());
+                pendingCommand = new RecordCommand(on, SystemClock.uptimeMillis());
                 statusToggle.setEnabled(false);
                 statusDot.setColorFilter(0xFFF59E0B);
                 statusText.setText(commandText(pendingCommand));
@@ -124,17 +128,15 @@ public final class MainActivity extends Activity {
                 startActivity(new Intent(MainActivity.this, SavedActivity.class));
             }
         });
-        driveText.setOnLongClickListener(new View.OnLongClickListener() {
-            @Override
-            public boolean onLongClick(View v) {
-                startActivity(new Intent(MainActivity.this, CameraDebugActivity.class));
-                return true;
-            }
-        });
         latestButton.setOnClickListener(new View.OnClickListener() {
             @Override
             public void onClick(View v) {
                 play(0);
+            }
+        });
+        findViewById(R.id.coffeeButton).setOnClickListener(new View.OnClickListener() {
+            @Override public void onClick(View v) {
+                if (coffeeDialog == null || !coffeeDialog.isShowing()) coffeeDialog = CoffeeDialog.show(MainActivity.this);
             }
         });
     }
@@ -155,6 +157,7 @@ public final class MainActivity extends Activity {
 
     @Override
     protected void onDestroy() {
+        if (coffeeDialog != null) coffeeDialog.dismiss();
         super.onDestroy();
         io.shutdownNow();
     }
@@ -162,8 +165,7 @@ public final class MainActivity extends Activity {
     /** Reserve the widest label once, using this screen's font metrics and density. */
     private void fixRecordButtonWidth() {
         String[] labels = {"The recorder isn't installed", "The recorder isn't running",
-                "Recording to /dev/null", "Recording since 23:59", "Recording the reverse camera",
-                "Paused for the camera debug screen", "Paused while the reverse camera is on",
+                "Recording since 23:59", "Recording the reverse camera", "Paused while the reverse camera is on",
                 "Recording is off", "Waiting for the car to be on", "Waiting for a USB drive",
                 "Starting the camera…", "Turning recording on…", "Turning recording off…"};
         float widest = 0;
@@ -231,21 +233,18 @@ public final class MainActivity extends Activity {
             text = "The recorder isn't running";
         } else {
             switch (rec.state == null ? "" : rec.state) {
-                case "recording-null":
-                    color = 0xFF22C55E;
-                    text = "Recording to /dev/null";
-                    break;
                 case "recording":
                     color = 0xFFEF4444;
                     text = "Recording since " + Fmt.hm(rec.since);
                     break;
                 case "reversing":
-                    color = rec.nullRecording ? 0xFF22C55E : 0xFFEF4444;
+                    color = 0xFFEF4444;
                     text = "Recording the reverse camera";
                     break;
-                case "debug":
-                    color = 0xFFF59E0B;
-                    text = "Paused for the camera debug screen";
+                case "live":
+                    boolean enabled = !Boolean.FALSE.equals(rec.configuredEnabled);
+                    color = enabled ? 0xFFF59E0B : 0xFF5B6470;
+                    text = enabled ? "Waiting for a USB drive" : "Recording is off";
                     break;
                 case "reverse":
                     color = 0xFFF59E0B;
@@ -274,7 +273,7 @@ public final class MainActivity extends Activity {
             }
         }
         if (pendingCommand != null) {
-            if (pendingCommand.waiting(rec.configuredEnabled, rec.state, rec.nullRecording, SystemClock.uptimeMillis())) {
+            if (pendingCommand.waiting(rec.configuredEnabled, rec.state, SystemClock.uptimeMillis())) {
                 color = 0xFFF59E0B;
                 text = commandText(pendingCommand);
             } else {
@@ -295,7 +294,7 @@ public final class MainActivity extends Activity {
         savedButton.setText("Saved (" + events + ")");
 
         if (space == null) {
-            driveText.setText(RecorderLink.nullRecording(this) ? "Recording to /dev/null" : "No Drive Detected");
+            driveText.setText("No Drive Detected");
         } else {
             String s = Fmt.size(space[1]) + " free of " + Fmt.size(space[0]);
             if (lib != null) {
@@ -311,8 +310,7 @@ public final class MainActivity extends Activity {
     }
 
     private static String commandText(RecordCommand command) {
-        return command.cancelNull ? "Waiting for a USB drive"
-                : command.enabled ? "Turning recording on…" : "Turning recording off…";
+        return command.enabled ? "Turning recording on…" : "Turning recording off…";
     }
 
     private void bindLibrary() {

@@ -36,8 +36,16 @@ public final class Main {
         Log.i("starting: " + config);
         Log.i("car: " + Car.describe());
         new GuideLines(config).restore();  // a previous recorder may have died with them off
-        recorder[0] = new Recorder(config, new Handler());
-        new Guard(config, recorder[0]).start();
+        Handler main = new Handler();
+        // A rear-view mirror shows a mirror image, which is what the backup camera sends
+        // (config.mirror: recordings flip it to the real view). So the viewer flips only if the
+        // camera doesn't.
+        MirrorFeed mirror = new MirrorFeed(!config.mirror);
+        mirror.start();
+        recorder[0] = new Recorder(config, main);
+        recorder[0].mirrorFeed = mirror;
+        new Guard(config, recorder[0], mirror).start();
+        main.post(new MirrorKey(main, new java.io.File(config.stateDir), mirror));
         if (saveButton != null) saveButton.start();
         Looper.loop();
     }

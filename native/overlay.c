@@ -1,10 +1,13 @@
 /* Camera-layer alpha control for units whose device tree shows the tcc803x display layout.
  * Boot-started by NEMESIS for CAP_SYS_RAWIO. Only uid 1000 can request a camera
- * lease; no polling, framebuffer copies, overlay routing or priority changes.
+ * lease. During a lease it checks the UI layer every millisecond (guard_ui); no framebuffer
+ * copies, overlay routing or mixer priority changes.
  */
 #define _GNU_SOURCE
 #include <errno.h>
 #include <fcntl.h>
+#include <poll.h>
+#include <sched.h>
 #include <signal.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -31,8 +34,50 @@ static int hidden;
 static uint32_t camera_base, camera_end;
 #define REG(o) regs[(o) / 4]
 
+/* Switching screens, the hardware composer hides the UI layer (RDMA0) for a few frames
+ * (tc_hide_fbTarget: framebuffer ioctl 0x91 sets its constant alpha to 0) so video layers under
+ * it show. Where nothing is under the UI, the mixer shows UI pixels unblended (WMIX color control,
+ * Telechips' default 0x20c44cc4: alpha only counts where both layers have pixels), so on a stock
+ * unit the last frame simply stays up. The camera layer is under the UI, so there the camera
+ * showed instead; the camera's own alpha doesn't count either, with nothing under it. While the
+ * camera is hidden the helper checks every GUARD_MS and, finding the UI hidden that way with no
+ * video layer on (RDMA2 and RDMA3 off), makes the UI's constant alpha opaque so its last frame
+ * shows, as on a stock unit. A screen refresh can still come between the composer's hide and the
+ * check, so now and then one frame of camera shows. With a video layer on, the UI is left
+ * see-through for it, and the camera's alpha works there. (Changing the camera layer's color
+ * control instead makes it black there with no delay, but black is what then shows.) */
+#define UI_OPAQUE 0x00ff00ffu
+#define GUARD_MS 1
+
+/* Puts back the UI's constant alpha of 0 if it's our opaque one, for the next frame. */
+static void ui_alpha_back(void) {
+    if ((REG(0x424) & ALPHA_MASK) != UI_OPAQUE) return;
+    REG(0x424) &= ~ALPHA_MASK;
+    __sync_synchronize();
+    REG(0x400) |= UPDATE;
+    __sync_synchronize();
+}
+
+/* One check of the UI layer; see above. */
+static void guard_ui(void) {
+    uint32_t ui = REG(0x400), alpha = REG(0x424) & ALPHA_MASK;
+    int hidden_ui = (ui & ENABLE) && (ui & AEN) && !(ui & ASEL);
+    int video = (REG(0x600) & ENABLE) || (REG(0x700) & ENABLE);
+    if (hidden_ui && !video && alpha == 0) {
+        REG(0x424) |= UI_OPAQUE;
+        __sync_synchronize();
+        REG(0x400) |= UPDATE;
+        __sync_synchronize();
+        fprintf(stderr, "overlay: UI hidden with nothing under the camera; holding its last frame\n");
+    } else if (alpha == UI_OPAQUE && hidden_ui && video) {
+        ui_alpha_back();
+        fprintf(stderr, "overlay: a video layer came on; UI see-through again\n");
+    }
+}
+
 static void restore(void) {
     if (!hidden) return;
+    ui_alpha_back();
     uint32_t ctrl = REG(0x500);
     /* A camera restart resets AEN. Do not restore saved values into a new
      * session after the driver has already restored its own settings. */
@@ -69,6 +114,20 @@ static int hide(unsigned w, unsigned h) {
     __sync_synchronize();
     fprintf(stderr, "overlay: camera transparent (%ux%u)\n", w, h);
     return 1;
+}
+
+static int read_request(int fd, unsigned char *buf, size_t size);
+
+/* Waits for the client's release byte (or its end), guarding the UI layer meanwhile. */
+static void await_release(int client) {
+    unsigned char release;
+    struct pollfd p = {client, POLLIN, 0};
+    while (!stopping) {
+        int r = poll(&p, 1, GUARD_MS);
+        if (r > 0 || (r < 0 && errno != EINTR)) break;
+        if (r == 0) guard_ui();
+    }
+    if (!stopping && (p.revents & POLLIN)) recv(client, &release, 1, MSG_DONTWAIT);
 }
 
 static int read_request(int fd, unsigned char *buf, size_t size) {
@@ -128,6 +187,10 @@ int main(void) {
     regs = mmap(NULL, 0x2000, PROT_READ | PROT_WRITE, MAP_SHARED, mem, 0x12000000);
     close(mem);
     if (regs == MAP_FAILED) { perror("overlay: mmap"); return 1; }
+    /* The UI guard has to see the composer's hide before the next screen refresh, with the
+     * recorder keeping the CPUs busy: lowest real-time priority. It sleeps between checks. */
+    struct sched_param rt = {1};
+    if (sched_setscheduler(0, SCHED_FIFO, &rt)) perror("overlay: real-time priority");
     /* Keep the mapping; give up root and all capabilities before listening. */
     if (setgid(1000) || setuid(1000)) { perror("overlay: drop root"); return 1; }
     struct sigaction action; memset(&action, 0, sizeof action);
@@ -159,10 +222,7 @@ int main(void) {
         if (ok) {
             timeout.tv_usec = 0;
             setsockopt(client, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof timeout);
-            if (send(client, "H", 1, MSG_NOSIGNAL) == 1) {
-                unsigned char release;
-                read_request(client, &release, 1);
-            }
+            if (send(client, "H", 1, MSG_NOSIGNAL) == 1) await_release(client);
             restore();
             send(client, "S", 1, MSG_NOSIGNAL);
         } else send(client, "N", 1, MSG_NOSIGNAL);

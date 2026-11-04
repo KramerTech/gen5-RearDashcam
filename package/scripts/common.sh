@@ -34,10 +34,34 @@ recorder_pid() {
 
 # NEMESIS root can switch uid but can't signal another uid's process, so kill as the system uid.
 kill_recorder() {
-    _pid=$(recorder_pid) || return 0
+    _pid=$(recorder_pid) || { restore_mirror_key; return 0; }
     log "killing recorder $_pid: $1"
     "$NEMESIS" root $SYSTEM_UID -c "kill -9 $_pid"
+    restore_mirror_key
     restore_guide_lines
+}
+
+# No firmware edits or global key whitelist. This one broadcast rule lives only while the
+# recorder's Mode listener is alive. Remove only our own file on crashes, shutdown or uninstall.
+restore_mirror_key() {
+    "$NEMESIS" root $SYSTEM_UID -c "sh $HERE/scripts/mirror-filter.sh disable" ||
+        log "WARN: couldn't remove the mirror Mode filter"
+    rm -f "$STATE/mirror-key-filtered" "$STATE/mirror-key-ready"
+    _mode_disabled=1
+}
+
+sync_mirror_key() {
+    _mode_ready=$(cat "$STATE/mirror-key-ready" 2>/dev/null)
+    if [ -n "$_mode_ready" ] && [ "$_mode_ready" != "${_mode_last:-}" ] && recorder_pid > /dev/null; then
+        _mode_disabled=0
+        if [ ! -f "$STATE/mirror-key-filtered" ]; then
+            "$NEMESIS" root $SYSTEM_UID -c "sh $HERE/scripts/mirror-filter.sh enable" ||
+                log "WARN: couldn't install the mirror Mode filter"
+        fi
+    else
+        [ "${_mode_disabled:-0}" = 1 ] || restore_mirror_key
+    fi
+    _mode_last=$_mode_ready
 }
 
 # The recorder turns the camera's guide lines off while recording, with a marker file saying so

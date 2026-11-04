@@ -38,8 +38,8 @@ final class RearCam {
      * the screen goes black.
      */
     private static final String PARAMETERS = "crop-size=0x0;preview-overlay=%dx0;preview-size=%dx%d;crop-position=0,0";
-    /** The stock view's picture position, moved left for wider sizes so the picture fits the 1920-wide screen. */
-    private static final int OVERLAY_X = 140, SCREEN_WIDTH = 1920;
+    /** Center our initial display rectangle; the stock view keeps its own camera parameters. */
+    private static final int SCREEN_WIDTH = 1920;
 
     private final Class<?> type;
     private final Object camera;
@@ -132,28 +132,6 @@ final class RearCam {
         return r == 0 ? info : null;
     }
 
-    /** "id: facing F, orientation O" for each camera, for the debug report. */
-    static String describeCameras() {
-        StringBuilder b = new StringBuilder();
-        try {
-            int n = cameras();
-            b.append(n).append(" cameras");
-            for (int id = 0; id < n; id++) {
-                Object info = info(id);
-                b.append("; ").append(id).append(": ");
-                if (info == null) {
-                    b.append("no info");
-                } else {
-                    b.append("facing ").append(info.getClass().getField("facing").getInt(info))
-                            .append(", orientation ").append(info.getClass().getField("orientation").getInt(info));
-                }
-            }
-        } catch (Throwable t) {
-            b.append(" (").append(t).append(')');
-        }
-        return b.append(" (facing 0 back, 1 front, 2 aux video, 3 DVRS)").toString();
-    }
-
     static final int GEAR_REVERSE = 1;
 
     /** RearCamera.getGearStatus(): GEAR_REVERSE in reverse, or -1 if it can't say. */
@@ -176,46 +154,12 @@ final class RearCam {
 
     /** Sets the parameters, without reading them first, and starts the direct-display path. */
     void start(int width, int height) throws Exception {
-        start(width, height, null);
-    }
-
-    /**
-     * halParams: TRUE to start from the HAL's own parameters and change only the position and size,
-     * as the stock view does; FALSE or null for ours, which is what recording uses. (Camera Debug's
-     * Auto Test tries both; on the digital cameras it was tried for, they made no difference.)
-     */
-    void start(int width, int height, Boolean halParams) throws Exception {
-        int x = Math.max(0, Math.min(OVERLAY_X, SCREEN_WIDTH - width));
+        int x = Math.max(0, (SCREEN_WIDTH - width) / 2);
         String p = String.format(java.util.Locale.US, PARAMETERS, x, width, height);
-        if (Boolean.TRUE.equals(halParams)) {
-            String own = parameters();
-            Log.i("camera: the HAL's parameters: " + own);
-            if (own != null && !own.isEmpty()) {
-                p = with(with(own, "preview-overlay", x + "x0"), "preview-size", width + "x" + height);
-            }
-        }
         timed("native_setParameters(" + p + ")", "native_setParameters", new Class<?>[] {String.class}, p);
         previewing = true;
         timed("startPreview", "startPreview", new Class<?>[0]);
         overlay.hide(width, height);
-    }
-
-    /** A flattened "k=v;k=v" parameter string with key set to value, added if it isn't there. */
-    private static String with(String flat, String key, String value) {
-        StringBuilder b = new StringBuilder();
-        boolean found = false;
-        for (String kv : flat.split(";")) {
-            if (kv.isEmpty()) continue;
-            if (b.length() > 0) b.append(';');
-            if (kv.startsWith(key + "=")) {
-                b.append(key).append('=').append(value);
-                found = true;
-            } else {
-                b.append(kv);
-            }
-        }
-        if (!found) b.append(b.length() > 0 ? ";" : "").append(key).append('=').append(value);
-        return b.toString();
     }
 
     /** Calls a method of the camera, logging how long it took and what it returned or threw. */
@@ -229,16 +173,6 @@ final class RearCam {
             Log.i("camera: " + what + " failed after " + (SystemClock.uptimeMillis() - t0) + " ms: " + e);
             throw e;
         }
-    }
-
-    /** The parameters as the HAL has them, for the debug report. */
-    String parameters() throws Exception {
-        return (String) call(type, camera, "native_getParameters", new Class<?>[0]);
-    }
-
-    /** RearCamera.checkVideoSignal(), which the stock view calls once a second. */
-    int signal() throws Exception {
-        return (Integer) call(type, camera, "checkVideoSignal", new Class<?>[0]);
     }
 
     /** Stops the camera and lets go of it, for the reverse view. */

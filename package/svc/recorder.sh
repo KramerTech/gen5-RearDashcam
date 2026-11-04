@@ -13,6 +13,7 @@ wait_for_boot
 sleep 2  # don't spin if the recorder keeps failing at startup
 
 mkdir -p "$STATE" && chmod 777 "$STATE"
+restore_mirror_key
 rm -f "$STATE/disabled"  # 0.4 test builds kept the on/off setting here; the app has it now
 if [ -f "$LOG" ]; then
     set -- $(ls -l "$LOG")  # no wc here; toolbox ls -l puts the size in field 4

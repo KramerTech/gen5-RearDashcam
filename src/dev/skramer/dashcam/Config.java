@@ -14,7 +14,11 @@ final class Config implements Cloneable {
     String mount = "/storage/usb0";
     /** Writable by the recorder: heartbeat file and scratch files. */
     String stateDir = "/data/nemesis/dashcam";
-    /** Recording size; the camera hardware scales its picture to it. */
+    /**
+     * Recording size; the camera hardware scales its picture to it. 720x480 is the analog
+     * camera's own (NTSC, two 720x240 fields): anything bigger is only upscaled, for more CPU and
+     * no more detail.
+     */
     int width = 720;
     int height = 480;
     /**
@@ -31,8 +35,6 @@ final class Config implements Cloneable {
     boolean mirror = true;
     /** Set if recordings come out with red and blue swapped. */
     boolean swapUv = false;
-    /** Debugging: run the camera without encoding, or the encoder on blank frames without the camera. */
-    boolean debugNoEncode, debugNoCamera;
     /** Turn off the camera's parking guide lines while recording (the camera draws them into its frames). */
     boolean hideGuideLines = true;
     /**
@@ -50,11 +52,6 @@ final class Config implements Cloneable {
      * reinstalls the app, which wipes its files.
      */
     String appConf = APP_FILES + "recorder.conf";
-    /**
-     * Rewritten every half second while the app's camera debug screen is open: what it asks for
-     * (camera, size, report). Meanwhile the recorder runs a debug session instead of recording.
-     */
-    String debugLease = APP_FILES + "debug";
 
     static Config parse(String[] args) {
         Config c = new Config();
@@ -74,18 +71,16 @@ final class Config implements Cloneable {
                 case "min-free-percent": c.minFreePercent = Integer.parseInt(v); break;
                 case "mirror": c.mirror = Boolean.parseBoolean(v); break;
                 case "swap-uv": c.swapUv = Boolean.parseBoolean(v); break;
-                case "debug-no-encode": c.debugNoEncode = Boolean.parseBoolean(v); break;
-                case "debug-no-camera": c.debugNoCamera = Boolean.parseBoolean(v); break;
                 case "hide-guide-lines": c.hideGuideLines = Boolean.parseBoolean(v); break;
                 case "save-button": c.saveButton = v; break;
                 case "save-seconds": c.saveSeconds = Integer.parseInt(v); break;
                 case "app-conf": c.appConf = v; break;
-                case "debug-lease": c.debugLease = v; break;
                 default: throw new IllegalArgumentException("unknown setting: " + k);
             }
         }
-        if (c.width < 64 || c.height < 64 || c.width % 2 != 0 || c.height % 2 != 0) {
-            throw new IllegalArgumentException("bad size: " + c.width + "x" + c.height);
+        // The hardware encoder won't start at a width that isn't a multiple of 16.
+        if (c.width < 64 || c.height < 64 || c.width % 16 != 0 || c.height % 2 != 0) {
+            throw new IllegalArgumentException("bad size: " + c.width + "x" + c.height + " (width must be a multiple of 16)");
         }
         return c;
     }

@@ -7,6 +7,7 @@
 #   dashcam-<version>.zip       NEMESIS package (nemesis install --update over ADB)
 #   dashcam-<version>-usb.zip   the same, wrapped for USB install: extract onto a drive's root
 #   DashcamPlayer.apk           the player app on its own
+#   DigitalRearviewMirror.apk  live camera viewer; requires this recorder version
 #   SHA256SUMS
 #
 # Needs: Java 17+ and the Android SDK ($ANDROID_HOME, default ~/Android/Sdk) with a platform,
@@ -67,6 +68,14 @@ certs=$("$BT/apksigner" verify --min-sdk-version 19 --print-certs "$work/Dashcam
 grep -qi "certificate SHA-256 digest: $SIGNING_CERT_SHA256\$" <<< "$certs" \
     || die "player signed with the wrong key (expected certificate SHA-256 $SIGNING_CERT_SHA256)"
 
+"$BT/apksigner" sign --ks "$KEYSTORE" --ks-key-alias dashcam --ks-pass "$KS_PASS" --min-sdk-version 19 \
+    --out "$work/DigitalRearviewMirror.apk" "$HERE/player/mirror/build/outputs/apk/release/mirror-release-unsigned.apk"
+rm -f "$work/DigitalRearviewMirror.apk.idsig"
+certs=$("$BT/apksigner" verify --min-sdk-version 19 --print-certs "$work/DigitalRearviewMirror.apk" 2>/dev/null) \
+    || die "mirror signature doesn't verify for API 19"
+grep -qi "certificate SHA-256 digest: $SIGNING_CERT_SHA256\$" <<< "$certs" \
+    || die "mirror signed with the wrong key"
+
 stage=$work/package
 cp -R "$HERE/package" "$stage"
 cp "$work/dashcam.jar" "$stage/dashcam.jar"
@@ -74,6 +83,7 @@ cp "$work/libdashcam.so" "$stage/libdashcam.so"
 cp "$work/dashcam-overlay" "$stage/dashcam-overlay"
 mkdir -p "$stage/app"
 cp "$work/DashcamPlayer.apk" "$stage/app/DashcamPlayer.apk"
+cp "$work/DigitalRearviewMirror.apk" "$stage/app/DigitalRearviewMirror.apk"
 cp "$HERE/LICENSE" "$stage/LICENSE"
 python3 -I - "$stage/NEMESIS.data" "$VERSION" <<'EOF'
 import sys
@@ -83,7 +93,7 @@ assert "@VERSION@" in s
 open(p, "w").write(s.replace("@VERSION@", v))
 EOF
 
-rm -rf "$DIST" && mkdir -p "$DIST"
+mkdir -p "$DIST"
 python3 -I - "$stage" "$DIST/dashcam-$VERSION.zip" "$DIST/dashcam-$VERSION-usb.zip" <<'EOF'
 import sys, zipfile
 from pathlib import Path
@@ -99,6 +109,8 @@ with zipfile.ZipFile(usb, "w", zipfile.ZIP_DEFLATED) as z:
 EOF
 cp "$work/dashcam.jar" "$DIST/dashcam.jar"
 cp "$work/DashcamPlayer.apk" "$DIST/DashcamPlayer.apk"
-(cd "$DIST" && sha256sum -- *.zip *.apk > SHA256SUMS)
+cp "$work/DigitalRearviewMirror.apk" "$DIST/DigitalRearviewMirror.apk"
+(cd "$DIST" && sha256sum -- "dashcam-$VERSION.zip" "dashcam-$VERSION-usb.zip" \
+    DashcamPlayer.apk DigitalRearviewMirror.apk > SHA256SUMS)
 echo "built:"
 ls -l "$DIST" | tail -n +2

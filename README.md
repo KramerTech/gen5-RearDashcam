@@ -27,9 +27,9 @@ Turns your backup camera into a dashcam for the Hyundai IONIQ 5 with the Gen5W h
 
 You need [NEMESIS](https://github.com/xwtk/hmg_nemesis) 1.16 or newer on the head unit, and a USB drive formatted as FAT32 or exFAT. A 64 GB drive holds about 85 hours of driving.
 
-> **Install [gen5-codec-patch](https://github.com/KramerTech/gen5-codec-patch) first.** The dashcam depends on its `media.codecs` package, version 2.1 or newer, which is required for on-device video playback: without it, the Dashcam app can't play recordings on the car's screen. NEMESIS checks for it and warns before installing the dashcam without it.
+> **Install [gen5-codec-patch](https://github.com/KramerTech/gen5-codec-patch) first.** The dashcam depends on its `media.codecs` package, which is required for on-device video playback: without it, the Dashcam app can't play recordings on the car's screen. NEMESIS checks for it and warns before installing the dashcam without it.
 
-1. Install `media.codecs` 2.1+ from [gen5-codec-patch releases](https://github.com/KramerTech/gen5-codec-patch/releases) first. If you have an older version, update it first; older versions don't tell NEMESIS their version, so the dashcam shows as incompatible until you do.
+1. Install `media.codecs` from [gen5-codec-patch releases](https://github.com/KramerTech/gen5-codec-patch/releases) first. Version 2.1 is recommended for new installs. Existing 2.0.x installations use the same decoder binaries and also work; their older metadata does not report a package version to NEMESIS.
 2. Download the latest dashcam release from the [releases page](https://github.com/KramerTech/gen5-RearDashcam/releases/latest) and install it from a USB drive or over ADB:
 
 **From a USB drive:** unzip `dashcam-<version>-usb.zip` onto an empty USB drive. Plug it in once the head unit has fully started, and confirm the install. You can keep recording to that same drive afterwards.
@@ -40,7 +40,9 @@ adb push dashcam-<version>.zip /data/local/tmp/
 adb shell '/system/xbin/nemesis install --update /data/local/tmp/dashcam-<version>.zip'
 ```
 
-After installing or updating version 0.15 or newer, reboot the head unit so the camera picture stops showing over Android Auto and CarPlay. If it still shows on your car, send a camera debug report (it includes the fix's log).
+After installing or updating version 0.15 or newer, reboot the head unit so the camera picture stops showing over Android Auto and CarPlay. If it still shows on your car, report it with `/data/nemesis/dashcam-overlay.log`, the fix's log.
+
+The package also includes **Digital Rearview Mirror**, a separate app showing only the live rear camera. Hold the left steering-wheel **Mode** button to open it; a normal short press still changes media sources. Hold **Mode** again, tap anywhere, or press Back to close it. It uses the recorder's camera session, including a preview-only session when there is no USB drive, and yields to the stock parking camera. It does not offer recording playback; the Dashcam player's parked-only restriction remains in place. Installing the mirror APK alone requires the matching recorder package to supply its video and Mode trigger.
 
 To update, install the new version the same way. Your recordings, saved clips and the on/off setting are kept.
 

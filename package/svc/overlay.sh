@@ -10,7 +10,7 @@ if [ -f /data/nemesis/dashcam-overlay.log ]; then
     [ "${4:-0}" -le 1048576 ] || mv /data/nemesis/dashcam-overlay.log /data/nemesis/dashcam-overlay.log.1
 fi
 chmod 755 ./dashcam-overlay || exit 1
-# Readable by the recorder (uid 1000), which puts it in the camera debug report.
+# Readable by the recorder (uid 1000).
 echo "$(date) start" >> /data/nemesis/dashcam-overlay.log
 chmod 644 /data/nemesis/dashcam-overlay.log
 exec ./dashcam-overlay >> /data/nemesis/dashcam-overlay.log 2>&1

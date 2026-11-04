@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<rules>
+    <!-- Mode's native long press does not cycle media. Suppress its stock settings shortcut only. -->
+    <broadcast block="true" log="false">
+        <intent-filter>
+            <action name="com.hkmc.intent.action.MODE_SHORTCUT_LONG" />
+        </intent-filter>
+    </broadcast>
+</rules>

@@ -26,8 +26,8 @@ import java.util.concurrent.ArrayBlockingQueue;
  * the recording size as they're copied. Once the reverse view is done, {@link #takeBack} opens
  * the camera again, into the same recording.
  * <p>
- * For the app's camera debug screen it can also run a debug session: the camera and the feed at
- * a size the screen asks for, checked but not recorded, with {@link #debugStatus} for the screen.
+ * For the mirror's live view without recording it can also run a preview session: the camera and
+ * the feed, not encoded.
  */
 @SuppressWarnings("deprecation")
 final class Recorder {
@@ -66,8 +66,6 @@ final class Recorder {
     private final int ticksPerFrame;
     /** This session's size, set on start. */
     private int width, height, ySize, cSize;
-    /** For a debug session: RearCam.start's parameter choice. */
-    private volatile Boolean halParams;
     private byte[] i420;
 
     /** Mapped on first use, never unmapped. */
@@ -95,15 +93,11 @@ final class Recorder {
     private String passiveSize;
     /** Copies by feeds that have ended, for the stats. */
     private long endedCopies, endedCopyNs;
-    /** The session: debug (not recording), camera and size. Read from other threads. */
-    private volatile boolean debug;
-    private volatile boolean nullRecording;
-    private volatile int cameraId = -1;
-    private volatile String size = "";
-    /** Debug sessions: the camera's video signal, the last frame's verdict and brightness, frames checked. */
-    private volatile int signal = Integer.MIN_VALUE;
-    private volatile String picture = "";
-    private volatile int luma, checked;
+    /** The session: a preview (the camera without recording), and its size. Read from other threads. */
+    private volatile boolean preview;
+    MirrorFeed mirrorFeed;
+    private int cameraId;
+    private String size = "";
     /** While the guide lines are off for this session: checks every 2 s that they stay off. */
     private final Runnable keepLinesOff = new Runnable() {
         @Override
@@ -117,55 +111,6 @@ final class Recorder {
         }
     };
     private int linesReasked;
-
-    /** Debug sessions: the feed's numbers and CPU use every 5 s. */
-    private final Runnable feedStats = new Runnable() {
-        private long at, frames, writes, torn, busy, missed, copies, copyNs;
-        private Feed of;
-        private final Perf cpu = new Perf();
-
-        @Override
-        public void run() {
-            Feed f = feed;
-            if (!active || !debug || f == null) return;
-            long now = SystemClock.uptimeMillis();
-            long[] n = f.counts();
-            String load = cpu.sample();
-            if (f == of) {
-                float secs = (now - at) / 1000f;
-                long c = n[5] - copies;
-                Log.i(String.format(Locale.US,
-                        "feed: %.1f writes/s, %.1f frames/s, %d copied (%.1f ms each), %d torn, %d busy, %d missed; %d checked, %s; CPU: %s",
-                        (n[1] - writes) / secs, (n[0] - frames) / secs, c, c == 0 ? 0 : (n[6] - copyNs) / 1e6 / c,
-                        n[2] - torn, n[3] - busy, n[4] - missed, checked, picture, load));
-            }
-            of = f;
-            at = now;
-            frames = n[0];
-            writes = n[1];
-            torn = n[2];
-            busy = n[3];
-            missed = n[4];
-            copies = n[5];
-            copyNs = n[6];
-            handler.postDelayed(this, 5000);
-        }
-    };
-    private final Runnable checkSignal = new Runnable() {
-        @Override
-        public void run() {
-            if (!active || !debug || camera == null) return;
-            try {
-                int s = camera.signal();
-                if (s != signal) Log.i("video signal " + s);
-                signal = s;
-            } catch (Throwable t) {
-                if (signal != Integer.MAX_VALUE) Log.w("can't check the video signal: " + t);
-                signal = Integer.MAX_VALUE;
-            }
-            handler.postDelayed(this, 1000);
-        }
-    };
 
     Recorder(Config config, Handler handler) {
         this.config = config;
@@ -188,11 +133,10 @@ final class Recorder {
 
     /** Saves the last few minutes, from any thread. */
     void saveRecent() {
-        if (nullRecording && active) { Notify.toast("Recording to /dev/null; no clips to save"); return; }
         writer.saveRecent();
     }
 
-    /** True while recording (or running a debug session), with the camera or from the stock view. Read from other threads. */
+    /** True while recording (or previewing), with the camera or from the stock view. Read from other threads. */
     boolean isActive() {
         return active;
     }
@@ -202,76 +146,41 @@ final class Recorder {
         return passive;
     }
 
-    /** True while running a debug session (if active). */
-    boolean isDebug() {
-        return debug;
-    }
-
-    /** Hardware encoding runs, but its output is discarded without files or queued copies. */
-    boolean isNullRecording() { return nullRecording; }
-
-    void startNull() {
-        nullRecording = true;
-        halParams = null;
-        start(false, RearCam.stockId(), config.width, config.height);
-    }
-
-    /** The session's camera. */
-    int cameraId() {
-        return cameraId;
-    }
-
-    /** The session's camera size, "WxH". */
-    String size() {
-        return size;
+    /** True while running a preview session (if active). */
+    boolean isPreview() {
+        return preview;
     }
 
     /** Starts recording, from the camera the stock view would open. */
     void start() {
-        nullRecording = false;
-        halParams = null;
-        start(false, RearCam.stockId(), config.width, config.height);
+        start(false);
     }
 
-    /** Starts a debug session: the camera and the feed, checked but not recorded. halParams as RearCam.start. */
-    void startDebug(int cameraId, int width, int height, Boolean halParams) {
-        nullRecording = false;
-        this.halParams = halParams;
-        start(true, cameraId, width, height);
+    /** Starts a preview session: the camera and the feed, for the mirror, not recorded. */
+    void startPreview() {
+        start(true);
     }
 
-    /** The debug session's parameter choice (RearCam.start); null for the default. */
-    Boolean halParams() {
-        return halParams;
-    }
-
-    private void start(boolean debug, int cameraId, int width, int height) {
+    private void start(boolean preview) {
         if (active) return;
-        this.debug = debug;
-        this.cameraId = cameraId;
-        this.width = width;
-        this.height = height;
+        this.preview = preview;
+        cameraId = RearCam.stockId();
+        width = config.width;
+        height = config.height;
         size = width + "x" + height;
         ySize = width * height;
         cSize = ySize / 4;
-        signal = Integer.MIN_VALUE;
-        picture = "";
-        checked = 0;
         noPicture = null;
         passive = false;
         try {
-            if (config.debugNoCamera && !debug) {
-                startBlank();
-                return;
-            }
             if (ram == null) ram = CameraRam.map();
             if (!ram.fits(width, height)) throw new IllegalStateException(CameraRam.SLOTS + " " + size + " frames don't fit");
-            if (!config.debugNoEncode && !debug) {
+            if (!preview) {
                 if (i420 == null || i420.length != ySize + 2 * cSize) i420 = new byte[ySize + 2 * cSize];
                 encoder = MediaCodec.createByCodecName(ENCODER);
                 configureEncoder();
             }
-            Log.i((debug ? "debug session: " : "") + "camera " + cameraId + " at " + size + ", camera type " + RearCam.type());
+            Log.i((preview ? "preview: " : "") + "camera " + cameraId + " at " + size + ", camera type " + RearCam.type());
             startNs = System.nanoTime();
             lastPtsUs = -1;
             statsStartMs = SystemClock.uptimeMillis();
@@ -282,17 +191,8 @@ final class Recorder {
             openCamera();
             active = true;
             feed.start();
-            if (debug) {
-                try {
-                    Log.i("camera parameters: " + camera.parameters());
-                } catch (Throwable t) {
-                    Log.w("can't read the camera parameters: " + t);
-                }
-                handler.post(checkSignal);
-                handler.post(feedStats);
-            }
         } catch (Throwable t) {
-            Log.e(debug ? "can't start the debug session" : "can't start recording", t);
+            Log.e(preview ? "can't start the preview" : "can't start recording", t);
             stop();
         }
     }
@@ -311,7 +211,7 @@ final class Recorder {
             }
         });
         feed = new Feed(width, height, false);
-        camera.start(width, height, halParams);
+        camera.start(width, height);
         skipUntilNs = hidLines ? System.nanoTime() + GUIDE_LINES_SETTLE_NS : 0;
         Log.i("camera started");
         if (hidLines) {
@@ -343,18 +243,16 @@ final class Recorder {
         }
         codecConfig = null;
         writer.end();
-        handler.removeCallbacks(checkSignal);
         handler.removeCallbacks(keepLinesOff);
-        handler.removeCallbacks(feedStats);
         if (was) Log.i("camera released");
     }
 
     /**
      * For reverse: lets go of the camera (released runs as soon as it has), turns the guide lines
-     * back on, and goes on recording the stock view's frames. A debug session just stops.
+     * back on, and goes on recording the stock view's frames. A preview just stops.
      */
     void handOff(Runnable released) {
-        if (!active || debug || passive || camera == null) {
+        if (!active || preview || passive || camera == null) {
             stop();
             released.run();
             return;
@@ -508,17 +406,6 @@ final class Recorder {
         return best != null ? best : new int[] {-(last + 1) * FIND_BLOCK, 0};
     }
 
-    /** A debug session as key=value lines, for the app's camera debug screen. */
-    String debugStatus() {
-        Feed f = feed;
-        StringBuilder b = new StringBuilder();
-        b.append("camera=").append(cameraId).append("\nsize=").append(size).append("\nmirror=").append(config.mirror)
-                .append("\nsignal=").append(signal == Integer.MIN_VALUE ? "" : signal == Integer.MAX_VALUE ? "error" : String.valueOf(signal))
-                .append("\npicture=").append(picture).append("\nluma=").append(luma).append("\nchecked=").append(checked).append('\n');
-        if (f != null) b.append(f.debugStatus());
-        return b.toString();
-    }
-
     private void configureEncoder() {
         MediaFormat f = MediaFormat.createVideoFormat("video/avc", width, height);
         f.setInteger(MediaFormat.KEY_COLOR_FORMAT, MediaCodecInfo.CodecCapabilities.COLOR_FormatYUV420Planar);
@@ -536,16 +423,12 @@ final class Recorder {
         try {
             if (!active || from != feed || (!from.stock && System.nanoTime() < skipUntilNs)) return;
             String why = noPicture(argb);
-            if (debug || nullRecording) {
-                picture = why == null ? "ok" : why;
-                luma = luma(argb);
-                checked++;
-            }
             if (why == null ? noPicture != null : !why.equals(noPicture)) {
                 Log.i(why != null ? why + "; not recording until there is one" : "the camera's picture is back");
                 noPicture = why;
             }
-            if (encoder != null && why == null && !debug) {
+            if (mirrorFeed != null && why == null && !from.stock) mirrorFeed.publish(argb, width, height);
+            if (encoder != null && why == null) {
                 encode(argb, ptsUs);
                 drain();
                 if (from.stock) {
@@ -556,20 +439,6 @@ final class Recorder {
         } finally {
             from.free.offer(argb);
         }
-    }
-
-    /** Average brightness (0-255) of the noPicture grid. */
-    private int luma(int[] argb) {
-        long sum = 0;
-        int n = 0;
-        for (int row = height / 16; row < height; row += height / 8) {
-            for (int col = width / 24; col < width; col += width / 12) {
-                int p = argb[row * width + col];
-                sum += (77 * ((p >> 16) & 0xff) + 150 * ((p >> 8) & 0xff) + 29 * (p & 0xff)) >> 8;
-                n++;
-            }
-        }
-        return (int) (sum / n);
     }
 
     /**
@@ -648,31 +517,6 @@ final class Recorder {
         encoded++;
     }
 
-    /** Debugging: the encoder alone, fed grey frames at the configured rate. */
-    private void startBlank() throws java.io.IOException {
-        i420 = new byte[ySize + 2 * cSize];
-        encoder = MediaCodec.createByCodecName(ENCODER);
-        configureEncoder();
-        startNs = System.nanoTime();
-        lastPtsUs = -1;
-        statsStartMs = SystemClock.uptimeMillis();
-        active = true;
-        final int[] grey = new int[ySize];
-        java.util.Arrays.fill(grey, 0xff808080);
-        Log.i("debug: encoder only, grey frames");
-        handler.post(new Runnable() {
-            @Override
-            public void run() {
-                if (!active) return;
-                long pts = (System.nanoTime() - startNs) / 1000;
-                encode(grey, pts);
-                drain();
-                logStats();
-                handler.postDelayed(this, 1000 / config.fps);
-            }
-        });
-    }
-
     /**
      * Every STATS_MS: frame rate, the time each frame takes to copy out and convert, frames lost,
      * and CPU use (see {@link Perf}), to watch how heavy recording is.
@@ -708,10 +552,6 @@ final class Recorder {
                     codecConfig = concat(bytes(f.getByteBuffer("csd-0")), bytes(f.getByteBuffer("csd-1")));
                 }
             } else if (o >= 0) {
-                if (nullRecording) {
-                    encoder.releaseOutputBuffer(o, false);
-                    continue;
-                }
                 ByteBuffer b = outputs[o];
                 b.position(info.offset);
                 b.limit(info.offset + info.size);
@@ -834,10 +674,6 @@ final class Recorder {
             return new long[] {completions, starts[0] + starts[1] + starts[2] + starts[3], torn, busy, missed, copies, copyNs};
         }
 
-        synchronized String debugStatus() {
-            return "frames=" + completions + "\nstarts=" + starts[0] + "," + starts[1] + "," + starts[2] + "," + starts[3]
-                    + "\ntorn=" + torn + "\nbusy=" + busy + "\nmissed=" + missed + "\n";
-        }
 
         /**
          * Hashes a strip of each buffer, 1/16 of the way down, every WATCH_MS. A single buffer
