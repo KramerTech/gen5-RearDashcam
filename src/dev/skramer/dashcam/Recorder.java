@@ -95,6 +95,8 @@ final class Recorder {
     private long endedCopies, endedCopyNs;
     /** The session: a preview (the camera without recording), and its size. Read from other threads. */
     private volatile boolean preview;
+    /** SystemClock.uptimeMillis() of the last failed write (drive pulled or full), or 0. */
+    private volatile long writeFailedMs;
     MirrorFeed mirrorFeed;
     private int cameraId;
     private String size = "";
@@ -120,10 +122,13 @@ final class Recorder {
         writer = new SegmentWriter(config, new Storage(config), new SegmentWriter.Failure() {
             @Override
             public void onWriteFailed() {
+                writeFailedMs = SystemClock.uptimeMillis();
                 handler.post(new Runnable() {
                     @Override
                     public void run() {
-                        stop();
+                        // Keeps the camera: the mirror may be showing it. Reversing, it's the stock view's.
+                        if (passive) stop();
+                        else stopEncoding();
                     }
                 });
             }
@@ -134,6 +139,11 @@ final class Recorder {
     /** Saves the last few minutes, from any thread. */
     void saveRecent() {
         writer.saveRecent();
+    }
+
+    /** SystemClock.uptimeMillis() when a frame last went into a segment file, or 0. From any thread. */
+    long lastWriteMs() {
+        return writer.lastWriteMs();
     }
 
     /** True while recording (or previewing), with the camera or from the stock view. Read from other threads. */
@@ -149,6 +159,11 @@ final class Recorder {
     /** True while running a preview session (if active). */
     boolean isPreview() {
         return preview;
+    }
+
+    /** SystemClock.uptimeMillis() when writing to the drive last failed, or 0. From any thread. */
+    long writeFailedMs() {
+        return writeFailedMs;
     }
 
     /** Starts recording, from the camera the stock view would open. */
@@ -175,11 +190,7 @@ final class Recorder {
         try {
             if (ram == null) ram = CameraRam.map();
             if (!ram.fits(width, height)) throw new IllegalStateException(CameraRam.SLOTS + " " + size + " frames don't fit");
-            if (!preview) {
-                if (i420 == null || i420.length != ySize + 2 * cSize) i420 = new byte[ySize + 2 * cSize];
-                encoder = MediaCodec.createByCodecName(ENCODER);
-                configureEncoder();
-            }
+            if (!preview) startEncoder();
             Log.i((preview ? "preview: " : "") + "camera " + cameraId + " at " + size + ", camera type " + RearCam.type());
             startNs = System.nanoTime();
             lastPtsUs = -1;
@@ -195,6 +206,58 @@ final class Recorder {
             Log.e(preview ? "can't start the preview" : "can't start recording", t);
             stop();
         }
+    }
+
+    /**
+     * Starts recording in a running preview session (a drive came in, or recording was turned
+     * on), without touching the camera: reopening it blanks the overlay and the mirror.
+     */
+    void startEncoding() {
+        if (!active || !preview || passive) return;
+        try {
+            startEncoder();
+        } catch (Throwable t) {
+            Log.e("can't start recording", t);
+            releaseEncoder();
+            return;
+        }
+        statsStartMs = SystemClock.uptimeMillis();
+        convertNs = 0;
+        encoded = 0;
+        preview = false;
+        Log.i("recording, in the live view's camera session");
+    }
+
+    /**
+     * Stops recording but keeps the camera running as a preview (the drive went, or recording
+     * was turned off), for the mirror; the guard releases it if nothing wants it.
+     */
+    void stopEncoding() {
+        if (!active || preview || passive) return;
+        releaseEncoder();
+        preview = true;
+        Log.i("recording stopped; the camera goes on for the live view");
+    }
+
+    private void startEncoder() throws Exception {
+        if (i420 == null || i420.length != ySize + 2 * cSize) i420 = new byte[ySize + 2 * cSize];
+        encoder = MediaCodec.createByCodecName(ENCODER);
+        configureEncoder();
+    }
+
+    /** Ends the encoder and the segment being written. */
+    private void releaseEncoder() {
+        if (encoder != null) {
+            try {
+                encoder.stop();
+            } catch (Throwable ignored) {
+                // Releasing anyway.
+            }
+            encoder.release();
+            encoder = null;
+        }
+        codecConfig = null;
+        writer.end();
     }
 
     /** Opens the camera at the session's size, with its feed (not started), guide lines off. */
@@ -232,17 +295,7 @@ final class Recorder {
         }
         if (guideLines != null) guideLines.restore();  // for the reverse view
         endFeed();
-        if (encoder != null) {
-            try {
-                encoder.stop();
-            } catch (Throwable ignored) {
-                // Releasing anyway.
-            }
-            encoder.release();
-            encoder = null;
-        }
-        codecConfig = null;
-        writer.end();
+        releaseEncoder();
         handler.removeCallbacks(keepLinesOff);
         if (was) Log.i("camera released");
     }

@@ -55,6 +55,8 @@ final class Guard extends Thread {
     private static final long STORAGE_NOTICE_MS = 60000;
     private static final int UNSUPPORTED_CAMERA_TYPE = 6;
     private static final long RETRY_MS = 5000;
+    /** The status-bar dot shows while a frame has gone into a segment file within this long. */
+    private static final long WRITING_MS = 3000;
     /** The ignition reading off this many polls in a row (about a second) means the car is off. */
     private static final int IGNITION_OFF_POLLS = 4;
 
@@ -66,6 +68,7 @@ final class Guard extends Thread {
     private final Method gearStatus;
     private final StockCameraWatcher watcher = new StockCameraWatcher();
     private final MirrorFeed mirror;
+    private final StatusIcon statusIcon = new StatusIcon();
     private boolean driveMounted;
     /** Until then (uptime ms), take down SystemUI's USB notice every state poll: a minute from startup or a mount, the scan's length. */
     private long hideStorageUntil = SystemClock.uptimeMillis() + STORAGE_NOTICE_MS;
@@ -80,6 +83,18 @@ final class Guard extends Thread {
         @Override
         public void run() {
             recorder.startPreview();
+        }
+    };
+    private final Runnable startEncoding = new Runnable() {
+        @Override
+        public void run() {
+            recorder.startEncoding();
+        }
+    };
+    private final Runnable stopEncoding = new Runnable() {
+        @Override
+        public void run() {
+            recorder.stopEncoding();
         }
     };
     private final Runnable takeBack = new Runnable() {
@@ -151,7 +166,9 @@ final class Guard extends Thread {
                 boolean carOff = carOff();
                 boolean blocked = now - lastBlockMs < SETTLE_MS;
                 if (beat % 4 == 0) checkAppSettings();
-                if (beat % 4 == 0 || !driveMounted) {  // every poll while out, to catch a mount quickly
+                // A failed write is usually the drive being pulled: hold off recording, and look again now.
+                boolean writeFailed = now - recorder.writeFailedMs() < RETRY_MS;
+                if (beat % 4 == 0 || !driveMounted || writeFailed) {  // every poll while out, to catch a mount quickly
                     boolean was = driveMounted;
                     driveMounted = storage.mounted();
                     if (driveMounted && !was) hideStorageUntil = now + STORAGE_NOTICE_MS;
@@ -160,8 +177,9 @@ final class Guard extends Thread {
                     storageNoticeFailed = true;
                     Log.w("can't take down the USB status-bar notice");
                 }
+                boolean canRecord = !unsupported && !disabled && driveMounted && !writeFailed;
                 // Only bootstrap the shared camera when no recording session is needed.
-                boolean wantPreview = mirror.requested() && !unsupported && (disabled || !driveMounted);
+                boolean wantPreview = mirror.requested() && !unsupported && !canRecord;
                 if (wantPreview != wasPreview) { wasPreview = wantPreview; nextStart = 0; }
                 boolean off = !wantPreview && (unsupported || disabled);
                 String offState = unsupported ? "unsupported" : "off";
@@ -169,8 +187,13 @@ final class Guard extends Thread {
                 if (recorder.isActive()) {
                     if (carOff) {
                         release("ignition off");
+                    } else if (recorder.isPreview() != wantPreview && !recorder.isPassive() && !blocked
+                            && (wantPreview || canRecord)) {
+                        // Recording starts or stops in the running session: reopening the camera
+                        // would blank the overlay and the mirror.
+                        main.post(wantPreview ? stopEncoding : startEncoding);
                     } else if (recorder.isPreview() != wantPreview) {
-                        release(wantPreview ? "recording stopped; live view only" : "recording instead of the live view");
+                        release(wantPreview ? "recording stopped; live view only" : "live view closed");
                         nextStart = 0;
                     } else if (off) {
                         release("turned off");
@@ -196,7 +219,7 @@ final class Guard extends Thread {
                 } else {
                     if (now >= nextStart) {
                         nextStart = now + RETRY_MS;
-                        mounted = wantPreview || driveMounted;
+                        mounted = wantPreview || (driveMounted && !writeFailed);
                         if (!mounted) {
                             if (beat % 120 == 0) Log.i("waiting for " + config.mount);
                         } else if (stockCameraOpen()) {
@@ -209,6 +232,10 @@ final class Guard extends Thread {
                     state = mounted ? "starting" : "nodrive";
                 }
                 writeStatus(state);
+                boolean writing = recorder.isActive() && !recorder.isPreview() && now - recorder.lastWriteMs() < WRITING_MS;
+                statusIcon.show(writing);
+                mirror.recording(writing ? MirrorFeed.RECORDING : disabled ? MirrorFeed.DISABLED
+                        : !driveMounted ? MirrorFeed.NO_DRIVE : MirrorFeed.OTHER);
                 mirror.allow(!carOff && !blocked && !unsupported && recorder.isActive() && !recorder.isPassive());
                 if (beat % 4 == 0) writeHeartbeat(beat / 4);
                 beat++;

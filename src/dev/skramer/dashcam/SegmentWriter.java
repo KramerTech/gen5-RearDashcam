@@ -47,6 +47,8 @@ final class SegmentWriter extends Thread {
     private int dropped;
     /** Wall time of a pending save request, or 0. */
     private volatile long saveRequestedMs;
+    /** Uptime of the last frame written to a segment, or 0. */
+    private volatile long lastWriteMs;
 
     SegmentWriter(Config config, Storage storage, Failure failure) {
         super("segment-writer");
@@ -66,6 +68,11 @@ final class SegmentWriter extends Thread {
     /** Saves the last Config.saveSeconds: at the next keyframe, or right away if nothing is recording. */
     void saveRecent() {
         saveRequestedMs = System.currentTimeMillis();
+    }
+
+    /** SystemClock.uptimeMillis() when a frame last went into a segment file, or 0 if none has. */
+    long lastWriteMs() {
+        return lastWriteMs;
     }
 
     /** Ends the current segment once the frames before this call are written. */
@@ -102,6 +109,7 @@ final class SegmentWriter extends Thread {
                 }
                 segment.writeFrame(f.data, f.ptsUs - segmentStartUs, f.key, f.config);
                 long now = SystemClock.uptimeMillis();
+                lastWriteMs = now;
                 if (now - lastSync >= 1000) {
                     segment.sync();
                     lastSync = now;

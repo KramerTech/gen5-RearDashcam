@@ -102,9 +102,9 @@ The own-car firmware already classifies steering-wheel Mode (`deviceId=5`, key c
 
 While this listener's heartbeat is fresh, the existing root watchdog invokes `scripts/mirror-filter.sh` as uid 1000 (system) to atomically install `mirror-mode.xml` as `/data/system/ifw/dashcam-mirror-mode.xml`. System owns the firewall directory (0700); NEMESIS root has no DAC override. Android's IntentFirewall blocks only the default Mode-long broadcast. The listener sees hardware events independently of broadcasts, so it can open the mirror without racing Button Settings. A one-second reload delay precedes the acknowledgement used by the listener. The watchdog removes this one rule if the listener or recorder disappears; startup, crash cleanup and package preuninstall also remove it. Other firewall rules are untouched. Uninstall restores the stock long-Mode action, with no factory APK, ODEX or register patch to restore.
 
-The live socket `dev.skramer.dashcam.mirror` accepts only the installed mirror application's UID. Each pull renews a 1.5-second lease. Responses contain a magic/version value, dimensions, the capture uptime, mirror flag, and little-endian BGRA pixels. Dimensions −1×0 indicate a request to close the viewer. The server keeps only the newest completed frame and caps clients at 20 fps. It publishes an existing cached recorder frame, with no second read of uncached camera RAM or extra encoder. The viewer uses OpenGL ES 2 for color-channel conversion, aspect fitting and mirroring; both apps compile the same small `RamView` source, without sharing activities or playback dependencies.
+The live socket `dev.skramer.dashcam.mirror` accepts only the installed mirror application's UID. Each pull renews a 1.5-second lease. Responses contain a magic/version value (`MIR2`), dimensions, the capture uptime, mirror flag, recording status byte, and little-endian BGRA pixels. The status is recording (the status-bar dot's test: a frame went into a segment file in the last 3 s), disabled (turned off in the app), no drive, or other (starting, or between sessions). The status bar is hidden in the viewer, so its bottom-right corner shows a slowly blinking red dot and "Recording to USB", or an empty grey dot and "Recording Disabled" or "No Flash Drive", and nothing for other. Dimensions −1×0 indicate a request to close the viewer. The server keeps only the newest completed frame and caps clients at 20 fps. It publishes an existing cached recorder frame, with no second read of uncached camera RAM or extra encoder. The viewer uses OpenGL ES 2 for color-channel conversion, aspect fitting and mirroring; both apps compile the same small `RamView` source, without sharing activities or playback dependencies.
 
-When recording is already running, viewing leaves that session running. Opening or closing the viewer does not reopen an existing camera session. Its window transitions are disabled; a new shared camera session starts with its overlay horizontally centered. Without a USB drive, or with recording disabled, the guard can run a preview-only session at the configured source resolution, without creating an encoder. Holding Mode again sends a close command through the live socket, without relaunching the activity. Tapping anywhere, pressing Back, or backgrounding the viewer closes its socket; an expired lease ends a preview-only session. Ignition and stock reverse/parking-view handoff still take priority. The server withholds frames during handoff, and both server and viewer reject frames older than 750 ms, so a frozen picture is replaced with an explicit waiting/interrupted message.
+When recording is already running, viewing leaves that session running. Opening or closing the viewer does not reopen an existing camera session. Its window transitions are disabled; a new shared camera session starts with its overlay horizontally centered. Without a USB drive, or with recording disabled, the guard can run a preview-only session at the configured source resolution, without creating an encoder. Switching between the two never reopens the camera, which would blank the overlay and the viewer: a drive coming in, or recording being turned on, starts the encoder in the running preview (`Recorder.startEncoding`), and a drive going out, or recording being turned off, stops it and leaves the camera running (`stopEncoding`). A failed write (the drive pulled) also drops to preview, and the guard then checks the mount on every poll and holds off recording for 5 s, so a vanished drive doesn't restart the encoder. The camera is released only if nothing wants it: the viewer closed with nothing to record. Holding Mode again sends a close command through the live socket, without relaunching the activity. Tapping anywhere, pressing Back, or backgrounding the viewer closes its socket; an expired lease ends a preview-only session. Ignition and stock reverse/parking-view handoff still take priority. The server withholds frames during handoff, and both server and viewer reject frames older than 750 ms, so a frozen picture is replaced with an explicit waiting/interrupted message.
 
 Emulator verification is documented in [tools/mirror-tests](tools/mirror-tests/README.md). It covers captured OEM short/long dispatch, real Android broadcast filtering and removal, actual Binder callbacks into the production listener, and the production socket/viewer with synthetic 1140×720 frames. Physical button timing, live camera load and stock-camera transitions still need a parked-car check; the emulator has no Hyundai camera HAL or display controller.
 
@@ -302,6 +302,23 @@ At boot the drive mounts while Android is still starting, before the recorder
 background: it switches to the system uid, waits for the notification service,
 cancels both notices every 250 ms for a minute and exits. A notice can still
 flash briefly before it's cancelled.
+
+## Recording dot
+
+A red dot shows among the status bar's icons while frames are going into
+segment files (the last one within 3 s), in the camera's own session or the
+reverse view's; not for a mirror-only preview. Hyundai's SystemUI shows icons
+set through the standard `IStatusBarService.setIcon`, but only in the slots of
+framework-res `config_statusBarIcons` (ta, tmc, volume, bluetooth_battery,
+bluetooth, phone_signal, data_connection, wifi, secure, etc, ime). The dot
+uses `tmc`, the European navigation's traffic-message icon, which SystemUI
+sets only on `EUNAVI_TMC_TPEG` broadcasts that US cars never send; `etc` is
+Quiet Mode and the Bluetooth remote. The image is the player app's
+`status_recording` drawable, 51x36 px like the stock icons (the bar makes
+icons 34 dp wide at hdpi), which SystemUI loads from that package. The
+recorder looks up its resource id from the installed APK. The status bar
+service keeps an icon after the process that set it dies, so the recorder's
+first call always hides it, taking down a dot left by a recorder that died.
 
 ## The main screen
 

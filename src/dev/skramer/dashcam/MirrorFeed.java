@@ -14,11 +14,16 @@ final class MirrorFeed extends Thread {
     static final String SOCKET = "dev.skramer.dashcam.mirror";
     static final String PACKAGE = "dev.skramer.dashcam.mirror";
     private static final long LEASE_MS = 1500, FRAME_MS = 750;
+    /** "MIR2": the frame header carries the recording status. Must match the app's. */
+    private static final int MAGIC = 0x4d495232;
     private final boolean mirror;
     private volatile long requested;
     private volatile boolean allowed;
     private volatile LocalSocket client;
     private volatile boolean closeRequested;
+    /** Recording status codes, shown in the viewer's corner. */
+    static final byte OTHER = 0, RECORDING = 1, DISABLED = 2, NO_DRIVE = 3;
+    private volatile byte recording = OTHER;
     private int[] latest;
     private int width, height;
     private long captured;
@@ -27,6 +32,8 @@ final class MirrorFeed extends Thread {
 
     boolean requested() { return requested != 0 && SystemClock.uptimeMillis() - requested < LEASE_MS; }
     void allow(boolean value) { allowed = value; }
+    /** Shown in the viewer: RECORDING while frames go to the drive (Guard's test for the status-bar dot), or why not. */
+    void recording(byte status) { recording = status; }
 
     /** Close the visible viewer through its existing connection, without relaunching its Activity. */
     boolean closeViewer() {
@@ -61,10 +68,10 @@ final class MirrorFeed extends Thread {
                     byte[] bytes = new byte[0];
                     IntBuffer buffer = null;
                     long next = 0;
-                    while (in.readInt() == 0x4d495231) {
+                    while (in.readInt() == MAGIC) {
                         if (closeRequested) {
-                            out.writeInt(0x4d495231); out.writeInt(-1); out.writeInt(0);
-                            out.writeLong(0); out.writeBoolean(false); out.flush();
+                            out.writeInt(MAGIC); out.writeInt(-1); out.writeInt(0);
+                            out.writeLong(0); out.writeBoolean(false); out.writeByte(OTHER); out.flush();
                             break;
                         }
                         long now = SystemClock.uptimeMillis();
@@ -82,8 +89,8 @@ final class MirrorFeed extends Thread {
                                 w = width; h = height; at = captured;
                             }
                         }
-                        out.writeInt(0x4d495231); out.writeInt(w); out.writeInt(h);
-                        out.writeLong(at); out.writeBoolean(mirror);
+                        out.writeInt(MAGIC); out.writeInt(w); out.writeInt(h);
+                        out.writeLong(at); out.writeBoolean(mirror); out.writeByte(recording);
                         if (w != 0) out.write(bytes);
                         out.flush();
                     }
