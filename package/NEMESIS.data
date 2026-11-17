@@ -6,8 +6,8 @@ type=application,service
 package-version=@VERSION@
 short-desc=Records the backup camera to a USB drive while driving
 depends=media.codecs
-os=NEEV23.*
-models=neev*
+os=NEEV23.*,CVEV.*
+models=neev*,cvev*
 preinstall=scripts/preinstall.sh
 preuninstall=scripts/preun.sh
 

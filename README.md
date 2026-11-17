@@ -1,9 +1,9 @@
 # Rear Dashcam for Gen5W head units (Without 360 View)
 
-Turns your backup camera into a dashcam for the Hyundai IONIQ 5 with the Gen5W head unit. It records to a USB drive whenever the car is on, and a **Dashcam** app lets you watch the recordings on the car's screen.
+Turns your backup camera into a dashcam for the Hyundai IONIQ 5 and Kia EV6 with the Gen5W head unit. It records to a USB drive whenever the car is on, and a **Dashcam** app lets you watch the recordings on the car's screen.
 
 > [!IMPORTANT]
-> **Only the IONIQ 5 SE and SEL are supported** (a plain backup camera, no 360° view). It's been tested on an IONIQ 5 SEL. The installer refuses other models with an "only supported on the Hyundai IONIQ 5" message.
+> **Only the IONIQ 5 SE and SEL and EV6 Wind (without tech package) are supported** (a plain backup camera, no 360° view). It's been tested on an IONIQ 5 SEL and EV6 Wind RWD. The installer refuses other models with an "only supported on the IONIQ 5 and EV6" message.
 >
 > **Cars with a 360° (surround view) camera aren't supported**, including the IONIQ 5 Limited and the EV6 GT-Line. On those cars the camera only sends a picture while the car is showing its own camera view, so there's nothing to record the rest of the time. The installer checks your car's camera and refuses to install if it won't work, with a "camera system not supported" message.
 
